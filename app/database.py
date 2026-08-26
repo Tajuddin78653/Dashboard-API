@@ -3,7 +3,12 @@ from sqlalchemy.orm import declarative_base
 
 from app.config import settings
 
-engine = create_async_engine(settings.DATABASE_URL, echo=False)
+# statement_cache_size=0 required for Supabase transaction pooler (pgbouncer)
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=False,
+    connect_args={"statement_cache_size": 0},
+)
 
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
