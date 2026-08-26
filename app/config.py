@@ -1,6 +1,3 @@
-import json
-from typing import Any
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,21 +15,12 @@ class Settings(BaseSettings):
     PAPER_TRADING: bool = True
     CAPITAL_PER_TRADE: float = 10000.0
     FORCE_EXIT_TIME: str = "15:12"
-    CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+    # Store as comma-separated string — avoids pydantic-settings JSON parsing issues
+    CORS_ORIGINS_STR: str = "http://localhost:3000"
 
-    @field_validator("CORS_ORIGINS", mode="before")
-    @classmethod
-    def parse_cors_origins(cls, v: Any) -> list[str]:
-        if isinstance(v, list):
-            return v
-        if isinstance(v, str):
-            v = v.strip()
-            # Try JSON array first: ["url1","url2"]
-            if v.startswith("["):
-                return json.loads(v)
-            # Comma-separated plain string: url1,url2
-            return [origin.strip() for origin in v.split(",") if origin.strip()]
-        return v
+    @property
+    def CORS_ORIGINS(self) -> list[str]:
+        return [o.strip() for o in self.CORS_ORIGINS_STR.split(",") if o.strip()]
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
