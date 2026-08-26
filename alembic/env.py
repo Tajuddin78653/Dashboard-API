@@ -9,19 +9,22 @@ from alembic import context
 
 # Load app config & models so Alembic can discover metadata
 from app.config import settings
-from app.database import Base
-
-# Import all models so their tables are registered on Base.metadata
-import app.models  # noqa: F401
 
 # this is the Alembic Config object
 config = context.config
 
-# Override sqlalchemy.url from settings (swap asyncpg → psycopg2 for sync migrations)
-sync_url = settings.DATABASE_URL.replace(
-    "postgresql+asyncpg://", "postgresql+psycopg2://"
+# Build a sync psycopg2 URL from whatever DATABASE_URL format is set
+_db_url = settings.DATABASE_URL
+_sync_url = (
+    _db_url
+    .replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+    .replace("postgresql://", "postgresql+psycopg2://")
 )
-config.set_main_option("sqlalchemy.url", sync_url)
+config.set_main_option("sqlalchemy.url", _sync_url)
+
+# Import Base and models AFTER config is set (avoids async engine creation)
+from app.database import Base  # noqa: E402
+import app.models  # noqa: F401, E402
 
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:
@@ -62,7 +65,12 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    asyncio.run(run_async_migrations())
+    # If a connection was passed directly (e.g. from migrate.py), use it
+    connectable = config.attributes.get("connection", None)
+    if connectable is not None:
+        do_run_migrations(connectable)
+    else:
+        asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():
