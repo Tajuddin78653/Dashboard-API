@@ -76,3 +76,5 @@ alembic/             # Database migration scripts
 GET /health
 → {"status": "ok", "service": "TradeDash API"}
 ```
+
+<!-- deploy trigger -->
