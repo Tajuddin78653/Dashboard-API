@@ -1,51 +1,81 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.core.redis_client import get_redis, close_redis
-from app.core.scheduler import create_scheduler
-from app.routers.auth import router as auth_router
-from app.routers.users import router as users_router
-from app.routers.webhook import router as webhook_router
-from app.routers.signals import router as signals_router
-from app.routers.trades import router as trades_router
-from app.routers.strategies import router as strategies_router, seed_strategies
-from app.routers.analytics import router as analytics_router
-from app.routers.reports import router as reports_router
-from app.routers.audit import router as audit_router
-from app.routers.admin import router as admin_router
-from app.database import AsyncSessionLocal
 
+logger = logging.getLogger(__name__)
 _scheduler = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    await get_redis()
-    async with AsyncSessionLocal() as db:
-        await seed_strategies(db)
-    global _scheduler
-    _scheduler = create_scheduler()
-    _scheduler.start()
-    yield
-    # Shutdown
-    if _scheduler:
-        _scheduler.shutdown(wait=False)
-    await close_redis()
+    # ── Startup — all steps non-fatal so /health always comes up ────────────
+    try:
+        from app.core.redis_client import get_redis
+        await get_redis()
+        logger.info("Redis connected")
+    except Exception as e:
+        logger.warning("Redis unavailable at startup: %s", e)
 
+    try:
+        from app.database import AsyncSessionLocal
+        from app.routers.strategies import seed_strategies
+        async with AsyncSessionLocal() as db:
+            await seed_strategies(db)
+        logger.info("Strategies seeded")
+    except Exception as e:
+        logger.warning("Strategy seed skipped (run alembic upgrade head first): %s", e)
+
+    try:
+        from app.core.scheduler import create_scheduler
+        global _scheduler
+        _scheduler = create_scheduler()
+        _scheduler.start()
+        logger.info("Scheduler started")
+    except Exception as e:
+        logger.warning("Scheduler failed to start: %s", e)
+
+    yield
+
+    # ── Shutdown ─────────────────────────────────────────────────────────────
+    try:
+        if _scheduler:
+            _scheduler.shutdown(wait=False)
+    except Exception:
+        pass
+    try:
+        from app.core.redis_client import close_redis
+        await close_redis()
+    except Exception:
+        pass
+
+
+# Resolve CORS once at import time
+_cors_origins = settings.CORS_ORIGINS
 
 app = FastAPI(title="TradeDash API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from app.routers.auth import router as auth_router
+from app.routers.users import router as users_router
+from app.routers.webhook import router as webhook_router
+from app.routers.signals import router as signals_router
+from app.routers.trades import router as trades_router
+from app.routers.strategies import router as strategies_router
+from app.routers.analytics import router as analytics_router
+from app.routers.reports import router as reports_router
+from app.routers.audit import router as audit_router
+from app.routers.admin import router as admin_router
 
 app.include_router(auth_router, prefix="/auth")
 app.include_router(users_router, prefix="/users")
