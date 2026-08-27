@@ -20,9 +20,9 @@ MARKET_OPEN  = time(9, 15)
 MARKET_CLOSE = time(15, 30)
 
 # ── Risk constants ────────────────────────────────────────────────────────────
-SL_PCT       = 0.015   # Hard stop loss   = -1.5% from entry
-INITIAL_TP   = 0.0005  # Initial target   = +0.05% from entry (quick scalp)
-TRAIL_PCT    = 0.005   # Trailing SL gap  = -0.5% below the highest price seen
+SL_PCT    = 0.015   # Hard stop loss  = -1.5% from entry  (always active)
+TP_PCT    = 0.005   # Initial target  = +0.5%  from entry (phase 1)
+TRAIL_PCT = 0.005   # Trailing gap    = -0.5% below peak  (phase 2, after TP hit)
 
 
 def _is_market_hours() -> bool:
@@ -33,13 +33,17 @@ def _is_market_hours() -> bool:
 
 async def monitor_open_trades() -> None:
     """
-    Every 60s during market hours:
-      1. Fetch live price for each open trade.
-      2. Update highest_price seen → raise trailing_sl accordingly.
-      3. Exit if:
-         • price <= hard stop_loss        (SL hit  — -1.5% from entry)
-         • price <= trailing_sl           (TSL hit — -0.5% from peak)
-         • price >= target_price          (TP hit  — +0.05% initial target)
+    Every 60s during market hours — two-phase exit logic:
+
+    PHASE 1  (tp_hit = False):
+      • Hard SL    : price <= entry × (1 - 1.5%)  → EXIT "sl-hit"
+      • Initial TP : price >= entry × (1 + 0.5%)  → lock profit, enter Phase 2
+                     Set tp_hit=True, highest_price=price, trailing_sl=price×(1-0.5%)
+
+    PHASE 2  (tp_hit = True  — profit locked, trailing active):
+      • Price rises → update highest_price → raise trailing_sl to (highest × 0.995)
+      • Trailing SL : price <= trailing_sl  → EXIT "trailing-sl-hit"  (profit secured)
+      • Hard SL     : price <= hard_sl       → EXIT "sl-hit"           (safety net)
     """
     if not _is_market_hours():
         return
@@ -55,7 +59,7 @@ async def monitor_open_trades() -> None:
             prices  = await get_prices_batch(symbols)
             redis   = await get_redis()
 
-            # Cache live prices (90s TTL)
+            # Cache live prices
             for sym, p in prices.items():
                 try:
                     await redis.set(f"prices:{sym}", str(p))
@@ -67,35 +71,52 @@ async def monitor_open_trades() -> None:
                 if price is None:
                     continue
 
-                # ── Update highest price + raise trailing SL ────────────────
-                highest = trade.highest_price or trade.entry_price
-                if price > highest:
-                    highest = price
-                    trade.highest_price = round(highest, 2)
-                    # Raise trailing SL to (highest − TRAIL_PCT)
-                    new_tsl = round(highest * (1 - TRAIL_PCT), 2)
-                    # Never lower trailing SL below hard SL
-                    hard_sl = round(trade.entry_price * (1 - SL_PCT), 2)
-                    trade.trailing_sl = max(new_tsl, hard_sl)
-                    await db.commit()
+                hard_sl  = round(trade.entry_price * (1 - SL_PCT), 2)
+                tp_level = round(trade.entry_price * (1 + TP_PCT),  2)
 
-                current_tsl  = trade.trailing_sl or round(trade.entry_price * (1 - TRAIL_PCT), 2)
-                current_sl   = trade.stop_loss
-                current_tp   = trade.target_price
+                # ── PHASE 1: waiting for initial TP ─────────────────────────
+                if not trade.tp_hit:
 
-                # ── Exit conditions ──────────────────────────────────────────
-                if price <= current_sl:
-                    logger.info("Hard SL hit: %s @ %.2f (SL=%.2f)", trade.symbol, price, current_sl)
-                    await close_trade(trade, price, "sl-hit", db, redis)
+                    if price <= hard_sl:
+                        logger.info("SL hit (Phase 1): %s @ %.2f  SL=%.2f",
+                                    trade.symbol, price, hard_sl)
+                        await close_trade(trade, price, "sl-hit", db, redis)
 
-                elif price <= current_tsl and price > trade.entry_price:
-                    # Only trail-stop if price actually moved above entry first
-                    logger.info("Trailing SL hit: %s @ %.2f (TSL=%.2f)", trade.symbol, price, current_tsl)
-                    await close_trade(trade, price, "trailing-sl-hit", db, redis)
+                    elif price >= tp_level:
+                        # TP touched — lock profit, activate trailing
+                        logger.info("TP hit (Phase 1): %s @ %.2f  TP=%.2f — activating trailing",
+                                    trade.symbol, price, tp_level)
+                        trade.tp_hit       = True
+                        trade.highest_price = round(price, 2)
+                        trade.trailing_sl   = round(price * (1 - TRAIL_PCT), 2)
+                        await db.commit()
+                        logger.info("  Trailing SL set to %.2f", trade.trailing_sl)
 
-                elif price >= current_tp:
-                    logger.info("TP hit: %s @ %.2f (TP=%.2f)", trade.symbol, price, current_tp)
-                    await close_trade(trade, price, "target-hit", db, redis)
+                # ── PHASE 2: profit locked, trail behind the peak ────────────
+                else:
+                    highest = trade.highest_price or price
+
+                    # Raise trailing SL as price moves higher
+                    if price > highest:
+                        highest = round(price, 2)
+                        trade.highest_price = highest
+                        trade.trailing_sl   = round(highest * (1 - TRAIL_PCT), 2)
+                        await db.commit()
+                        logger.info("TSL raised: %s  new_peak=%.2f  tsl=%.2f",
+                                    trade.symbol, highest, trade.trailing_sl)
+
+                    current_tsl = trade.trailing_sl or round(trade.entry_price * (1 - TRAIL_PCT), 2)
+
+                    if price <= current_tsl:
+                        logger.info("Trailing SL hit (Phase 2): %s @ %.2f  TSL=%.2f",
+                                    trade.symbol, price, current_tsl)
+                        await close_trade(trade, price, "trailing-sl-hit", db, redis)
+
+                    elif price <= hard_sl:
+                        # Safety net — should rarely trigger in Phase 2
+                        logger.info("Hard SL hit (Phase 2): %s @ %.2f  SL=%.2f",
+                                    trade.symbol, price, hard_sl)
+                        await close_trade(trade, price, "sl-hit", db, redis)
 
     except Exception as exc:
         logger.error("monitor_open_trades error: %s", exc)
