@@ -29,9 +29,10 @@ class Trade(Base):
     entry_price: Mapped[float] = mapped_column(Float, nullable=False)
     exit_price: Mapped[float] = mapped_column(Float, nullable=True)
     stop_loss: Mapped[float] = mapped_column(Float, nullable=False)
-    trailing_sl: Mapped[float] = mapped_column(Float, nullable=True)   # current trailing stop level
-    highest_price: Mapped[float] = mapped_column(Float, nullable=True)  # highest price seen since entry
+    trailing_sl: Mapped[float] = mapped_column(Float, nullable=True)    # trailing stop level (active after TP hit)
+    highest_price: Mapped[float] = mapped_column(Float, nullable=True)  # highest price seen since TP hit
     target_price: Mapped[float] = mapped_column(Float, nullable=False)
+    tp_hit: Mapped[bool] = mapped_column(nullable=True, default=False)  # True once initial TP is touched
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     gross_pnl: Mapped[float] = mapped_column(Float, nullable=True)
     charges: Mapped[float] = mapped_column(Float, nullable=True)
