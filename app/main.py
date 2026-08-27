@@ -89,6 +89,6 @@ app.include_router(audit_router, prefix="/audit-logs")
 app.include_router(admin_router, prefix="/admin")
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
     return {"status": "ok", "service": "TradeDash API"}
