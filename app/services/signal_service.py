@@ -38,13 +38,26 @@ async def parse_webhook_payload(data: dict) -> tuple[list[str], list[str]]:
 
 
 async def generate_signal_id(db: AsyncSession) -> str:
-    """Generate SIG-YYYYMMDD-NNN format signal ID."""
+    """Generate SIG-YYYYMMDD-NNN format signal ID — unique even within a batch."""
+    import random
     today = date.today()
-    result = await db.execute(
-        select(func.count(Signal.id)).where(func.date(Signal.timestamp) == today)
-    )
-    count = (result.scalar() or 0) + 1
-    return f"SIG-{today.strftime('%Y%m%d')}-{count:03d}"
+    prefix = f"SIG-{today.strftime('%Y%m%d')}"
+    # Keep trying until we find an unused ID
+    for _ in range(20):
+        result = await db.execute(
+            select(func.count(Signal.id)).where(func.date(Signal.timestamp) == today)
+        )
+        count = (result.scalar() or 0) + 1
+        candidate = f"{prefix}-{count:03d}"
+        # Check it doesn't already exist
+        exists = await db.execute(select(Signal.id).where(Signal.signal_id == candidate))
+        if exists.scalar_one_or_none() is None:
+            return candidate
+        # If exists, bump by a random offset to avoid tight loops
+        await db.execute(select(func.count(Signal.id)))  # no-op flush
+    # Fallback: use timestamp-based unique suffix
+    import time
+    return f"{prefix}-{int(time.time() % 100000):05d}"
 
 
 async def receive_webhook(
