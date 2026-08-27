@@ -115,10 +115,14 @@ async def receive_webhook(
 
                 capital = settings.CAPITAL_PER_TRADE
                 quantity = max(1, int(capital / price))
-                # Risk parameters as per strategy config
-                stop_loss    = round(price * (1 - 0.015), 2)  # SL  = -1.5%
-                target_price = round(price * (1 + 0.0005), 2) # TP  = +0.05% (initial)
-                trailing_sl  = round(price * (1 - 0.005), 2)  # TSL = trail at -0.5% from peak
+                # ── Risk parameters ─────────────────────────────────────────
+                # SL   = -1.5% hard stop from entry (always active)
+                # TP   = +0.5% initial target — once hit, lock profit & trail
+                # TSL  = -0.5% below highest price seen AFTER TP is hit
+                stop_loss    = round(price * (1 - 0.015), 2)  # -1.5% hard SL
+                target_price = round(price * (1 + 0.005), 2)  # +0.5% initial TP
+                # trailing_sl and highest_price are NULL at entry
+                # they are set by the scheduler ONLY after TP is first touched
 
                 trade_id_str = await generate_trade_id(db)
                 trade = Trade(
@@ -131,8 +135,9 @@ async def receive_webhook(
                     entry_price=price,
                     stop_loss=stop_loss,
                     target_price=target_price,
-                    trailing_sl=trailing_sl,
-                    highest_price=price,
+                    trailing_sl=None,        # activated only after TP hit
+                    highest_price=None,      # tracking starts after TP hit
+                    tp_hit=False,
                     quantity=quantity,
                     status="entered",
                 )
@@ -146,7 +151,7 @@ async def receive_webhook(
                     "entry_price": price,
                     "stop_loss": stop_loss,
                     "target_price": target_price,
-                    "trailing_sl": trailing_sl,
+                    "trailing_sl": "activates after TP hit",
                     "capital_deployed": round(price * quantity, 2),
                 }
             except Exception as e:
