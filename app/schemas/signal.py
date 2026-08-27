@@ -12,6 +12,7 @@ class SignalResponse(BaseModel):
     status: str
     timestamp: datetime
     strategy_id: UUID | None = None
+    strategy_name: str | None = None   # joined from strategy table
     model_config = ConfigDict(from_attributes=True)
 
 
