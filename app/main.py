@@ -54,14 +54,16 @@ async def lifespan(app: FastAPI):
 
 
 # Resolve CORS once at import time
+# If CORS_ALLOW_ALL=true or wildcard in list, open to all origins
 _cors_origins = settings.CORS_ORIGINS
+_allow_all = settings.CORS_ALLOW_ALL or "*" in _cors_origins
 
 app = FastAPI(title="TradeDash API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
+    allow_origins=["*"] if _allow_all else _cors_origins,
+    allow_credentials=False if _allow_all else True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
