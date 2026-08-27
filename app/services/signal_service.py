@@ -12,18 +12,25 @@ from app.core.telegram import notify_new_signal
 
 
 async def parse_webhook_payload(data: dict) -> tuple[list[str], list[str]]:
-    """Parse Chartink webhook payload. Returns (symbols, prices)."""
+    """Parse Chartink webhook payload. Returns (symbols, prices).
+
+    Chartink sends stocks as comma-separated values (e.g. "NMDC Steel Ltd,Whirlpool Of India Ltd").
+    We split ONLY on commas — never on spaces — so multi-word stock names are preserved.
+    The symbol stored is the trimmed stock name as-is (Chartink uses company names, not NSE codes).
+    """
     stocks_raw = data.get("stocks", data.get("stock", ""))
     if isinstance(stocks_raw, list):
-        symbols = [s.strip().upper() for s in stocks_raw if s.strip()]
+        symbols = [s.strip() for s in stocks_raw if s.strip()]
     else:
-        symbols = [s.strip().upper() for s in re.split(r"[,\s]+", str(stocks_raw)) if s.strip()]
+        # Split only on commas — preserve spaces within stock names
+        symbols = [s.strip() for s in str(stocks_raw).split(",") if s.strip()]
 
     prices_raw = data.get("trigger_prices", data.get("trigger_price", ""))
     if isinstance(prices_raw, list):
         prices = [str(p).strip() for p in prices_raw]
     else:
-        prices = [p.strip() for p in re.split(r"[,\s]+", str(prices_raw)) if p.strip()]
+        # Prices are always comma-separated numbers — safe to split on comma
+        prices = [p.strip() for p in str(prices_raw).split(",") if p.strip()]
 
     return symbols, prices
 
