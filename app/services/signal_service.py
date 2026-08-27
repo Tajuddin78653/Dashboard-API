@@ -8,7 +8,9 @@ from sqlalchemy import select, func
 from app.models.signal import Signal
 from app.models.strategy import Strategy
 from app.utils.price import get_price
+from app.utils.charges import calc_charges
 from app.core.telegram import notify_new_signal
+from app.config import settings
 
 
 async def parse_webhook_payload(data: dict) -> tuple[list[str], list[str]]:
@@ -104,6 +106,47 @@ async def receive_webhook(
         await db.commit()
         await db.refresh(signal)
 
+        # ── Auto-create trade (paper trading) ──────────────────────────────
+        trade_result = None
+        if price and price > 0:
+            try:
+                from app.models.trade import Trade
+                from app.services.trade_service import generate_trade_id
+
+                capital = settings.CAPITAL_PER_TRADE
+                quantity = max(1, int(capital / price))
+                stop_loss = round(price * 0.97, 2)    # 3% SL below entry
+                target_price = round(price * 1.06, 2)  # 6% target above entry
+
+                trade_id_str = await generate_trade_id(db)
+                trade = Trade(
+                    id=uuid.uuid4(),
+                    trade_id=trade_id_str,
+                    signal_id=signal.id,
+                    strategy_id=strategy_id,
+                    symbol=symbol,
+                    signal_type="BUY",
+                    entry_price=price,
+                    stop_loss=stop_loss,
+                    target_price=target_price,
+                    quantity=quantity,
+                    status="entered",
+                )
+                db.add(trade)
+                signal.status = "entered"
+                await db.commit()
+                await db.refresh(trade)
+                trade_result = {
+                    "trade_id": trade_id_str,
+                    "quantity": quantity,
+                    "entry_price": price,
+                    "stop_loss": stop_loss,
+                    "target_price": target_price,
+                    "capital_deployed": round(price * quantity, 2),
+                }
+            except Exception as e:
+                trade_result = {"error": str(e)}
+
         # Telegram alert
         await notify_new_signal(
             symbol=symbol,
@@ -118,6 +161,7 @@ async def receive_webhook(
             "status": "signal_created",
             "signal_id": signal_id_str,
             "price": price,
+            "trade": trade_result,
         })
 
     return {"status": "processed", "results": results}
