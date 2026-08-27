@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
         pass
 
 
-# Resolve CORS once at import time
+# Resolve CORS once at import time  [deploy: 2026-08-27T14:46:35]
 # If CORS_ALLOW_ALL=true or wildcard in list, open to all origins
 _cors_origins = settings.CORS_ORIGINS
 _allow_all = settings.CORS_ALLOW_ALL or "*" in _cors_origins
