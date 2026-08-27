@@ -57,8 +57,11 @@ async def receive_webhook(
     results = []
 
     for i, symbol in enumerate(symbols):
-        # Check duplicate via Redis
-        already_traded = await redis.sismember(today_key, symbol)
+        # Check duplicate via Redis (non-fatal — if Redis is down, allow through)
+        try:
+            already_traded = await redis.sismember(today_key, symbol)
+        except Exception:
+            already_traded = False
         if already_traded:
             results.append({"symbol": symbol, "status": "skipped", "reason": "already traded today"})
             continue
@@ -82,11 +85,14 @@ async def receive_webhook(
         )
         db.add(signal)
 
-        # Mark traded today in Redis, expire at midnight
-        await redis.sadd(today_key, symbol)
-        now = datetime.now(timezone.utc)
-        midnight = now.replace(hour=23, minute=59, second=59)
-        await redis.expireat(today_key, int(midnight.timestamp()))
+        # Mark traded today in Redis, expire at midnight (non-fatal)
+        try:
+            await redis.sadd(today_key, symbol)
+            now = datetime.now(timezone.utc)
+            midnight = now.replace(hour=23, minute=59, second=59)
+            await redis.expireat(today_key, int(midnight.timestamp()))
+        except Exception:
+            pass
 
         await db.commit()
         await db.refresh(signal)
