@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -32,7 +32,7 @@ class Trade(Base):
     trailing_sl: Mapped[float] = mapped_column(Float, nullable=True)    # trailing stop level (active after TP hit)
     highest_price: Mapped[float] = mapped_column(Float, nullable=True)  # highest price seen since TP hit
     target_price: Mapped[float] = mapped_column(Float, nullable=False)
-    tp_hit: Mapped[bool] = mapped_column(nullable=True, default=False)  # True once initial TP is touched
+    tp_hit: Mapped[bool] = mapped_column(Boolean(), nullable=True, default=False)  # True once initial TP is touched
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     gross_pnl: Mapped[float] = mapped_column(Float, nullable=True)
     charges: Mapped[float] = mapped_column(Float, nullable=True)
