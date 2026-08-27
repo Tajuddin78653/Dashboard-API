@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     FORCE_EXIT_TIME: str = "15:12"
     # Store as comma-separated string — avoids pydantic-settings JSON parsing issues
     CORS_ORIGINS_STR: str = "http://localhost:3000"
+    # Allow all origins flag — set to true in Render env to bypass CORS for all origins
+    CORS_ALLOW_ALL: bool = False
 
     @property
     def CORS_ORIGINS(self) -> list[str]:
