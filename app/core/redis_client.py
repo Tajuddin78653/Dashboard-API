@@ -41,6 +41,18 @@ class _NoopRedis:
     async def delete(self, *_: Any, **__: Any) -> int:
         return 0
 
+    async def hset(self, *_: Any, **__: Any) -> int:
+        return 0
+
+    async def hget(self, *_: Any, **__: Any) -> Any:
+        return None
+
+    async def hgetall(self, *_: Any, **__: Any) -> dict:
+        return {}
+
+    async def setex(self, *_: Any, **__: Any) -> Any:
+        return None
+
     async def close(self) -> None:
         pass
 
