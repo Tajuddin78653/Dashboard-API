@@ -115,8 +115,10 @@ async def receive_webhook(
 
                 capital = settings.CAPITAL_PER_TRADE
                 quantity = max(1, int(capital / price))
-                stop_loss = round(price * 0.97, 2)    # 3% SL below entry
-                target_price = round(price * 1.06, 2)  # 6% target above entry
+                # Risk parameters as per strategy config
+                stop_loss    = round(price * (1 - 0.015), 2)  # SL  = -1.5%
+                target_price = round(price * (1 + 0.0005), 2) # TP  = +0.05% (initial)
+                trailing_sl  = round(price * (1 - 0.005), 2)  # TSL = trail at -0.5% from peak
 
                 trade_id_str = await generate_trade_id(db)
                 trade = Trade(
@@ -129,6 +131,8 @@ async def receive_webhook(
                     entry_price=price,
                     stop_loss=stop_loss,
                     target_price=target_price,
+                    trailing_sl=trailing_sl,
+                    highest_price=price,
                     quantity=quantity,
                     status="entered",
                 )
@@ -142,6 +146,7 @@ async def receive_webhook(
                     "entry_price": price,
                     "stop_loss": stop_loss,
                     "target_price": target_price,
+                    "trailing_sl": trailing_sl,
                     "capital_deployed": round(price * quantity, 2),
                 }
             except Exception as e:
