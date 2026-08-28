@@ -20,7 +20,7 @@ async def generate_report(
     db: AsyncSession = Depends(get_db),
     _: object = Depends(get_current_user),
 ):
-    query = select(Trade).where(Trade.status.in_(["target-hit", "sl-hit", "exited"]))
+    query = select(Trade).where(Trade.status.in_(["target-hit", "sl-hit", "trailing-sl-hit", "exited"]))
 
     if date_from:
         from sqlalchemy import func
@@ -43,7 +43,7 @@ async def generate_report(
 
     total = len(trades)
     winners = sum(1 for t in trades if (t.net_pnl or 0) > 0)
-    losers = total - winners
+    losers  = sum(1 for t in trades if (t.net_pnl or 0) <= 0)
     net_pnl = round(sum(t.net_pnl or 0 for t in trades), 2)
 
     return {
