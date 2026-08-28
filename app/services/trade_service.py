@@ -76,27 +76,39 @@ async def open_trade(data: dict, db: AsyncSession, redis) -> Trade:
 
 
 async def close_trade(trade: Trade, exit_price: float, reason: str, db: AsyncSession, redis) -> Trade:
-    """Close a trade, compute P&L, notify, and remove from Redis cache."""
+    """Close a trade, compute P&L, sync Signal status, notify, and remove from Redis cache."""
     gross_pnl = (exit_price - trade.entry_price) * trade.quantity
     if trade.signal_type == "SELL":
         gross_pnl = -gross_pnl
     charges = calc_charges(trade.entry_price, exit_price, trade.quantity)
     net_pnl = round(gross_pnl - charges, 2)
 
+    # Map exit reason → trade/signal status
     status_map = {
-        "target-hit": "target-hit",
-        "sl-hit": "sl-hit",
-        "force-exit-eod": "exited",
-        "manual-exit": "exited",
+        "target-hit":      "target-hit",
+        "sl-hit":          "sl-hit",
+        "trailing-sl-hit": "trailing-sl-hit",   # profit-secured trailing exit
+        "force-exit-eod":  "exited",
+        "manual-exit":     "exited",
     }
+    final_status = status_map.get(reason, "exited")
 
     trade.exit_price = exit_price
     trade.gross_pnl = round(gross_pnl, 2)
     trade.charges = charges
     trade.net_pnl = net_pnl
-    trade.status = status_map.get(reason, "exited")
+    trade.status = final_status
     trade.reason = reason
     trade.exit_time = datetime.now(timezone.utc)
+
+    # ── Sync linked Signal status to match trade outcome ─────────────────────
+    # This ensures the Live Signals page shows the correct status badge
+    # (sl-hit / target-hit / trailing-sl-hit / exited) instead of staying "entered"
+    if trade.signal_id:
+        sig_result = await db.execute(select(Signal).where(Signal.id == trade.signal_id))
+        signal = sig_result.scalar_one_or_none()
+        if signal:
+            signal.status = final_status
 
     await db.commit()
     await db.refresh(trade)
