@@ -39,7 +39,8 @@ class StrategyMetrics(BaseModel):
 
 
 class SummaryStats(BaseModel):
-    total_signals: int
+    total_signals: int          # lifetime total
+    today_signals: int = 0      # signals received today
     open_trades: int
     today_pnl: float
     overall_win_rate: float | None
