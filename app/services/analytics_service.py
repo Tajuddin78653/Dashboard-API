@@ -15,22 +15,35 @@ from app.schemas.analytics import (
 async def get_summary_stats(db: AsyncSession) -> SummaryStats:
     today = date.today()
 
+    # Total lifetime signals
     total_signals = (await db.execute(select(func.count(Signal.id)))).scalar() or 0
+
+    # Signals received today specifically
+    today_signals = (
+        await db.execute(
+            select(func.count(Signal.id)).where(func.date(Signal.timestamp) == today)
+        )
+    ).scalar() or 0
+
     open_trades = (
         await db.execute(select(func.count(Trade.id)).where(Trade.status == "entered"))
     ).scalar() or 0
 
+    # Today's closed trades P&L (include trailing-sl-hit)
     today_pnl_result = await db.execute(
         select(func.sum(Trade.net_pnl)).where(
-            Trade.status.in_(["target-hit", "sl-hit", "exited"]),
+            Trade.status.in_(["target-hit", "sl-hit", "trailing-sl-hit", "exited"]),
             func.date(Trade.exit_time) == today,
         )
     )
     today_pnl = float(today_pnl_result.scalar() or 0)
 
+    # All-time win rate (include trailing-sl-hit)
     closed = (
         await db.execute(
-            select(Trade).where(Trade.status.in_(["target-hit", "sl-hit", "exited"]))
+            select(Trade).where(
+                Trade.status.in_(["target-hit", "sl-hit", "trailing-sl-hit", "exited"])
+            )
         )
     ).scalars().all()
     winners = sum(1 for t in closed if (t.net_pnl or 0) > 0)
@@ -38,6 +51,7 @@ async def get_summary_stats(db: AsyncSession) -> SummaryStats:
 
     return SummaryStats(
         total_signals=total_signals,
+        today_signals=today_signals,
         open_trades=open_trades,
         today_pnl=today_pnl,
         overall_win_rate=win_rate,
@@ -60,7 +74,7 @@ async def get_strategy_metrics(strategy_id, db: AsyncSession) -> StrategyMetrics
         await db.execute(
             select(Trade).where(
                 Trade.strategy_id == strategy_id,
-                Trade.status.in_(["target-hit", "sl-hit", "exited"]),
+                Trade.status.in_(["target-hit", "sl-hit", "trailing-sl-hit", "exited"]),
             )
         )
     ).scalars().all()
@@ -122,7 +136,7 @@ async def get_monthly_pnl(year: int, db: AsyncSession) -> list[MonthlyPnL]:
             func.extract("month", Trade.exit_time).label("month"),
             func.sum(Trade.net_pnl).label("net_pnl"),
         ).where(
-            Trade.status.in_(["target-hit", "sl-hit", "exited"]),
+            Trade.status.in_(["target-hit", "sl-hit", "trailing-sl-hit", "exited"]),
             func.extract("year", Trade.exit_time) == year,
         ).group_by(func.extract("month", Trade.exit_time))
         .order_by(func.extract("month", Trade.exit_time))
@@ -139,7 +153,7 @@ async def get_monthly_pnl(year: int, db: AsyncSession) -> list[MonthlyPnL]:
 async def get_equity_curve(db: AsyncSession) -> list[EquityCurvePoint]:
     result = await db.execute(
         select(Trade).where(
-            Trade.status.in_(["target-hit", "sl-hit", "exited"]),
+            Trade.status.in_(["target-hit", "sl-hit", "trailing-sl-hit", "exited"]),
             Trade.exit_time.isnot(None),
         ).order_by(Trade.exit_time)
     )
