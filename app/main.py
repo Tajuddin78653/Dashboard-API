@@ -13,6 +13,21 @@ _scheduler = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup — all steps non-fatal so /health always comes up ────────────
+
+    # Run DB migrations automatically on every deploy (safe — alembic is idempotent)
+    try:
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            logger.info("DB migration: %s", result.stdout.strip() or "already up to date")
+        else:
+            logger.warning("DB migration warning: %s", result.stderr.strip())
+    except Exception as e:
+        logger.warning("DB migration skipped: %s", e)
+
     try:
         from app.core.redis_client import get_redis
         await get_redis()
@@ -53,7 +68,7 @@ async def lifespan(app: FastAPI):
         pass
 
 
-# Resolve CORS once at import time  [deploy: 2026-08-27T14:46:35]
+# Resolve CORS once at import time
 # If CORS_ALLOW_ALL=true or wildcard in list, open to all origins
 _cors_origins = settings.CORS_ORIGINS
 _allow_all = settings.CORS_ALLOW_ALL or "*" in _cors_origins
