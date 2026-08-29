@@ -14,19 +14,36 @@ _scheduler = None
 async def lifespan(app: FastAPI):
     # ── Startup — all steps non-fatal so /health always comes up ────────────
 
-    # Run DB migrations automatically on every deploy (safe — alembic is idempotent)
+    # ── Auto-migrate: apply any pending schema changes via raw SQL ────────────
+    # Safer than subprocess on Render free tier (no shell, no PTY).
+    # Each block is idempotent — safe to run on every deploy.
     try:
-        import subprocess, sys
-        result = subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "head"],
-            capture_output=True, text=True, timeout=60
-        )
-        if result.returncode == 0:
-            logger.info("DB migration: %s", result.stdout.strip() or "already up to date")
-        else:
-            logger.warning("DB migration warning: %s", result.stderr.strip())
+        from sqlalchemy import text
+        from app.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            # Migration 0004: add webhook_token column to strategies
+            await db.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='strategies' AND column_name='webhook_token'
+                    ) THEN
+                        ALTER TABLE strategies ADD COLUMN webhook_token VARCHAR(36) UNIQUE;
+                        -- Seed tokens for the two Chartink webhook strategies
+                        UPDATE strategies
+                           SET webhook_token = gen_random_uuid()::text
+                         WHERE name = 'Chartink Webhook'   AND webhook_token IS NULL;
+                        UPDATE strategies
+                           SET webhook_token = gen_random_uuid()::text
+                         WHERE name = 'Chartink Webhook 2' AND webhook_token IS NULL;
+                    END IF;
+                END $$;
+            """))
+            await db.commit()
+            logger.info("Auto-migrate 0004: webhook_token column ready")
     except Exception as e:
-        logger.warning("DB migration skipped: %s", e)
+        logger.warning("Auto-migrate 0004 skipped: %s", e)
 
     try:
         from app.core.redis_client import get_redis
