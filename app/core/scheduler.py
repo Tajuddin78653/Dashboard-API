@@ -19,9 +19,9 @@ IST = pytz.timezone("Asia/Kolkata")
 MARKET_OPEN  = time(9, 15)
 MARKET_CLOSE = time(15, 30)
 
-# ── Risk constants ────────────────────────────────────────────────────────────
+# Risk constants
 SL_PCT    = 0.015   # Hard stop loss  = -1.5% from entry  (always active)
-TP_PCT    = 0.005   # Initial target  = +0.5%  from entry (phase 1)
+TP_PCT    = 0.005   # Initial target  = +0.5% from entry  (phase 1)
 TRAIL_PCT = 0.005   # Trailing gap    = -0.5% below peak  (phase 2, after TP hit)
 
 
@@ -33,17 +33,21 @@ def _is_market_hours() -> bool:
 
 async def monitor_open_trades() -> None:
     """
-    Every 60s during market hours — two-phase exit logic:
+    Every 60s during market hours - two-phase exit logic:
 
-    PHASE 1  (tp_hit = False):
-      • Hard SL    : price <= entry × (1 - 1.5%)  → EXIT "sl-hit"
-      • Initial TP : price >= entry × (1 + 0.5%)  → lock profit, enter Phase 2
-                     Set tp_hit=True, highest_price=price, trailing_sl=price×(1-0.5%)
+    PHASE 1  (tp_hit is not True):
+       Hard SL    : price <= entry x (1 - 1.5%)   EXIT "sl-hit"
+       Initial TP : price >= entry x (1 + 0.5%)   lock profit, enter Phase 2
+                    Set tp_hit=True, highest_price=price, trailing_sl=price*(1-0.5%)
 
-    PHASE 2  (tp_hit = True  — profit locked, trailing active):
-      • Price rises → update highest_price → raise trailing_sl to (highest × 0.995)
-      • Trailing SL : price <= trailing_sl  → EXIT "trailing-sl-hit"  (profit secured)
-      • Hard SL     : price <= hard_sl       → EXIT "sl-hit"           (safety net)
+    PHASE 2  (tp_hit is True AND trailing_sl is set):
+       Price rises  -> update highest_price -> raise trailing_sl to (highest * 0.995)
+       Trailing SL  : price <= trailing_sl   EXIT "trailing-sl-hit"  (profit secured)
+       Hard SL      : price <= hard_sl        EXIT "sl-hit"           (safety net)
+
+    NOTE: tp_hit is checked with `trade.tp_hit is True` (not `not trade.tp_hit`) to
+    correctly handle NULL values that may exist from older rows — NULL must behave
+    as Phase 1 (not yet hit TP), never as Phase 2.
     """
     if not _is_market_hours():
         return
@@ -69,13 +73,15 @@ async def monitor_open_trades() -> None:
             for trade in trades:
                 price = prices.get(trade.symbol)
                 if price is None:
+                    logger.warning("No live price for %s — skipping this tick", trade.symbol)
                     continue
 
                 hard_sl  = round(trade.entry_price * (1 - SL_PCT), 2)
                 tp_level = round(trade.entry_price * (1 + TP_PCT),  2)
 
-                # ── PHASE 1: waiting for initial TP ─────────────────────────
-                if not trade.tp_hit:
+                # PHASE 1: tp_hit must be explicitly True to be in Phase 2
+                # NULL or False both mean Phase 1 (waiting for initial TP)
+                if trade.tp_hit is not True:
 
                     if price <= hard_sl:
                         logger.info("SL hit (Phase 1): %s @ %.2f  SL=%.2f",
@@ -83,16 +89,17 @@ async def monitor_open_trades() -> None:
                         await close_trade(trade, price, "sl-hit", db, redis)
 
                     elif price >= tp_level:
-                        # TP touched — lock profit, activate trailing
-                        logger.info("TP hit (Phase 1): %s @ %.2f  TP=%.2f — activating trailing",
+                        # TP touched - lock profit, activate trailing
+                        logger.info("TP hit (Phase 1): %s @ %.2f  TP=%.2f - activating trailing",
                                     trade.symbol, price, tp_level)
-                        trade.tp_hit       = True
+                        trade.tp_hit        = True
                         trade.highest_price = round(price, 2)
                         trade.trailing_sl   = round(price * (1 - TRAIL_PCT), 2)
                         await db.commit()
                         logger.info("  Trailing SL set to %.2f", trade.trailing_sl)
 
-                # ── PHASE 2: profit locked, trail behind the peak ────────────
+                # PHASE 2: profit locked, trail behind the peak
+                # Extra guard: trailing_sl MUST be set — if somehow NULL, recalculate from highest
                 else:
                     highest = trade.highest_price or price
 
@@ -105,7 +112,14 @@ async def monitor_open_trades() -> None:
                         logger.info("TSL raised: %s  new_peak=%.2f  tsl=%.2f",
                                     trade.symbol, highest, trade.trailing_sl)
 
-                    current_tsl = trade.trailing_sl or round(trade.entry_price * (1 - TRAIL_PCT), 2)
+                    # Use stored trailing_sl; if NULL for any reason, derive from highest
+                    current_tsl = trade.trailing_sl
+                    if current_tsl is None:
+                        current_tsl = round(highest * (1 - TRAIL_PCT), 2)
+                        trade.trailing_sl = current_tsl
+                        await db.commit()
+                        logger.warning("trailing_sl was NULL in Phase 2 for %s — recalculated to %.2f",
+                                       trade.symbol, current_tsl)
 
                     if price <= current_tsl:
                         logger.info("Trailing SL hit (Phase 2): %s @ %.2f  TSL=%.2f",
@@ -113,7 +127,6 @@ async def monitor_open_trades() -> None:
                         await close_trade(trade, price, "trailing-sl-hit", db, redis)
 
                     elif price <= hard_sl:
-                        # Safety net — should rarely trigger in Phase 2
                         logger.info("Hard SL hit (Phase 2): %s @ %.2f  SL=%.2f",
                                     trade.symbol, price, hard_sl)
                         await close_trade(trade, price, "sl-hit", db, redis)
@@ -123,7 +136,7 @@ async def monitor_open_trades() -> None:
 
 
 async def force_exit_all() -> None:
-    """FORCE_EXIT_TIME IST — force-exit all remaining open trades at market price."""
+    """FORCE_EXIT_TIME IST - force-exit all remaining open trades at market price."""
     try:
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(Trade).where(Trade.status == "entered"))
@@ -145,7 +158,7 @@ async def force_exit_all() -> None:
 
 
 async def eod_summary() -> None:
-    """3:30 PM IST — send EOD P&L summary via Telegram."""
+    """3:30 PM IST - send EOD P&L summary via Telegram."""
     try:
         from sqlalchemy import func
         from datetime import date
