@@ -3,42 +3,45 @@ import yfinance as yf
 
 
 async def get_price(symbol: str, fallback: float | None = None) -> float | None:
-    """Fetch NSE live price for a symbol. Returns fallback if yfinance fails."""
+    """Fetch NSE live price for a symbol using fast_info.last_price.
+    Falls back to the Chartink trigger price if yfinance cannot return a live quote.
+    Never uses previous_close as a fallback — that would be yesterday's price.
+    """
     try:
         loop = asyncio.get_event_loop()
         ticker = await loop.run_in_executor(None, lambda: yf.Ticker(f"{symbol}.NS"))
         info = await loop.run_in_executor(None, lambda: ticker.fast_info)
-        price = getattr(info, "last_price", None) or getattr(info, "previous_close", None)
-        return float(price) if price else fallback
+        price = getattr(info, "last_price", None)
+        # Only accept a positive, non-zero live price — never fall back to previous_close
+        if price and float(price) > 0:
+            return float(price)
+        return fallback
     except Exception:
         return fallback
 
 
+async def _fetch_one(symbol: str) -> tuple[str, float | None]:
+    """Helper: fetch live price for a single symbol."""
+    price = await get_price(symbol)
+    return symbol, price
+
+
 async def get_prices_batch(symbols: list[str]) -> dict[str, float]:
-    """Fetch live prices for multiple NSE symbols at once."""
+    """Fetch live NSE prices for multiple symbols concurrently using fast_info.last_price.
+
+    Previously used yf.download() which returns daily OHLC candles — the last row's
+    'Close' is the PREVIOUS DAY'S closing price, not the live price. That caused false
+    SL/TSL triggers. This version fetches each ticker's fast_info.last_price in parallel.
+    """
     if not symbols:
         return {}
-    try:
-        loop = asyncio.get_event_loop()
-        tickers = " ".join(f"{s}.NS" for s in symbols)
-        data = await loop.run_in_executor(
-            None, lambda: yf.download(tickers, period="1d", progress=False)
-        )
-        prices: dict[str, float] = {}
-        if data.empty:
-            return prices
-        if hasattr(data.columns, "levels"):  # MultiIndex (multiple symbols)
-            close = data["Close"]
-            for sym in symbols:
-                col = f"{sym}.NS"
-                if col in close.columns:
-                    series = close[col].dropna()
-                    if not series.empty:
-                        prices[sym] = float(series.iloc[-1])
-        else:  # Single symbol
-            series = data["Close"].dropna()
-            if not series.empty and symbols:
-                prices[symbols[0]] = float(series.iloc[-1])
-        return prices
-    except Exception:
-        return {}
+    tasks = [_fetch_one(sym) for sym in symbols]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    prices: dict[str, float] = {}
+    for item in results:
+        if isinstance(item, Exception):
+            continue
+        sym, price = item
+        if price is not None and price > 0:
+            prices[sym] = price
+    return prices
