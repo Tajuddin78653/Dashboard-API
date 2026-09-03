@@ -21,15 +21,15 @@ async def send_message(text: str, token: str = "", chat_id: str = "") -> None:
 async def notify_new_signal(
     symbol: str, signal_type: str, price: float, strategy: str, signal_id: str
 ) -> None:
-    arrow = "🟢" if signal_type == "BUY" else "🔴"
+    arrow = "\U0001f7e2" if signal_type == "BUY" else "\U0001f534"
     msg = (
-        f"📡 <b>New Signal — TradeDash</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 Signal   : {signal_id}\n"
-        f"📌 Symbol   : {symbol}\n"
+        f"\U0001f4e1 <b>New Signal \u2014 TradeDash</b>\n"
+        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"\U0001f4cb Signal   : {signal_id}\n"
+        f"\U0001f4cc Symbol   : {symbol}\n"
         f"{arrow} Type     : {signal_type}\n"
-        f"💰 Price    : ₹{price:,.2f}\n"
-        f"📊 Strategy : {strategy}\n"
+        f"\U0001f4b0 Price    : \u20b9{price:,.2f}\n"
+        f"\U0001f4ca Strategy : {strategy}\n"
     )
     await send_message(msg)
 
@@ -39,15 +39,15 @@ async def notify_trade_entry(
     sl: float, tp: float, capital: float
 ) -> None:
     msg = (
-        f"📝 <b>Trade Entry — TradeDash</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 Trade    : {trade_id}\n"
-        f"📌 Symbol   : {symbol}\n"
-        f"💰 Entry    : ₹{entry:,.2f}\n"
-        f"📦 Qty      : {qty}\n"
-        f"🔴 SL       : ₹{sl:,.2f}\n"
-        f"🟢 TP       : ₹{tp:,.2f}\n"
-        f"💵 Capital  : ₹{capital:,.2f}\n"
+        f"\U0001f7e2 <b>Trade Entry \u2014 TradeDash</b>\n"
+        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"\U0001f194 Trade    : {trade_id}\n"
+        f"\U0001f4cc Symbol   : {symbol}\n"
+        f"\U0001f4b5 Entry    : \u20b9{entry:,.2f}\n"
+        f"\U0001f522 Qty      : {qty}\n"
+        f"\U0001f6d1 SL       : \u20b9{sl:,.2f}\n"
+        f"\U0001f3af TP       : \u20b9{tp:,.2f}\n"
+        f"\U0001f4b8 Capital  : \u20b9{capital:,.2f}\n"
     )
     await send_message(msg)
 
@@ -56,16 +56,16 @@ async def notify_trade_exit(
     trade_id: str, symbol: str, entry: float, exit_p: float,
     net_pnl: float, reason: str
 ) -> None:
-    emoji = "✅" if net_pnl >= 0 else "❌"
+    emoji = "\u2705" if net_pnl >= 0 else "\u274c"
     sign = "+" if net_pnl >= 0 else ""
     msg = (
-        f"{emoji} <b>Trade Exit — TradeDash</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 Trade    : {trade_id}\n"
-        f"📌 Symbol   : {symbol}\n"
-        f"💰 Entry    : ₹{entry:,.2f} → ₹{exit_p:,.2f}\n"
-        f"❤️ Net P&L  : {sign}₹{net_pnl:,.2f}\n"
-        f"📝 Reason   : {reason}\n"
+        f"{emoji} <b>Trade Exit \u2014 TradeDash</b>\n"
+        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"\U0001f194 Trade    : {trade_id}\n"
+        f"\U0001f4cc Symbol   : {symbol}\n"
+        f"\U0001f4b0 Entry    : \u20b9{entry:,.2f}  \u2192\u20b9{exit_p:,.2f}\n"
+        f"\U0001f49b Net P&L  : {sign}\u20b9{net_pnl:,.2f}\n"
+        f"\U0001f4dd Reason   : {reason}\n"
     )
     await send_message(msg)
 
@@ -73,14 +73,14 @@ async def notify_trade_exit(
 async def notify_eod_summary(
     total: int, winners: int, losers: int, net_pnl: float
 ) -> None:
-    emoji = "🟢" if net_pnl >= 0 else "🔴"
+    emoji = "\U0001f4c8" if net_pnl >= 0 else "\U0001f4c9"
     sign = "+" if net_pnl >= 0 else ""
     msg = (
-        f"📊 <b>EOD Summary — TradeDash</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📋 Total Trades : {total}\n"
-        f"✅ Winners      : {winners}\n"
-        f"❌ Losers       : {losers}\n"
-        f"{emoji} Net P&L      : {sign}₹{net_pnl:,.2f}\n"
+        f"\U0001f4ca <b>EOD Summary \u2014 TradeDash</b>\n"
+        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        f"\U0001f522 Total Trades : {total}\n"
+        f"\u2705 Winners      : {winners}\n"
+        f"\u274c Losers       : {losers}\n"
+        f"{emoji} Net P&L      : {sign}\u20b9{net_pnl:,.2f}\n"
     )
     await send_message(msg)
