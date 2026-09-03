@@ -8,7 +8,6 @@ from sqlalchemy import select, func
 from app.models.signal import Signal
 from app.models.strategy import Strategy
 from app.utils.price import get_price
-from app.utils.charges import calc_charges
 from app.core.telegram import notify_new_signal
 from app.config import settings
 
@@ -17,28 +16,28 @@ async def parse_webhook_payload(data: dict) -> tuple[list[str], list[str]]:
     """Parse Chartink webhook payload. Returns (symbols, prices).
 
     Chartink sends stocks as comma-separated values (e.g. "NMDC Steel Ltd,Whirlpool Of India Ltd").
-    We split ONLY on commas — never on spaces — so multi-word stock names are preserved.
+    We split ONLY on commas - never on spaces - so multi-word stock names are preserved.
     The symbol stored is the trimmed stock name as-is (Chartink uses company names, not NSE codes).
     """
     stocks_raw = data.get("stocks", data.get("stock", ""))
     if isinstance(stocks_raw, list):
         symbols = [s.strip() for s in stocks_raw if s.strip()]
     else:
-        # Split only on commas — preserve spaces within stock names
+        # Split only on commas - preserve spaces within stock names
         symbols = [s.strip() for s in str(stocks_raw).split(",") if s.strip()]
 
     prices_raw = data.get("trigger_prices", data.get("trigger_price", ""))
     if isinstance(prices_raw, list):
         prices = [str(p).strip() for p in prices_raw]
     else:
-        # Prices are always comma-separated numbers — safe to split on comma
+        # Prices are always comma-separated numbers - safe to split on comma
         prices = [p.strip() for p in str(prices_raw).split(",") if p.strip()]
 
     return symbols, prices
 
 
 async def generate_signal_id(db: AsyncSession) -> str:
-    """Generate SIG-YYYYMMDD-NNN format signal ID — unique even within a batch."""
+    """Generate SIG-YYYYMMDD-NNN format signal ID - unique even within a batch."""
     import random
     today = date.today()
     prefix = f"SIG-{today.strftime('%Y%m%d')}"
@@ -79,7 +78,7 @@ async def receive_webhook(
     results = []
 
     for i, symbol in enumerate(symbols):
-        # Check duplicate via Redis (non-fatal — if Redis is down, allow through)
+        # Check duplicate via Redis (non-fatal - if Redis is down, allow through)
         try:
             already_traded = await redis.sismember(today_key, symbol)
         except Exception:
@@ -88,10 +87,19 @@ async def receive_webhook(
             results.append({"symbol": symbol, "status": "skipped", "reason": "already traded today"})
             continue
 
-        # Get price
+        # Get price — use Chartink trigger price as fallback only; never use previous_close
         price_str = prices[i] if i < len(prices) else None
         fallback = float(price_str) if price_str else None
         price = await get_price(symbol, fallback)
+
+        # Capital guard: skip stocks we cannot buy even 1 share of with our capital
+        if price and price > settings.CAPITAL_PER_TRADE:
+            results.append({
+                "symbol": symbol,
+                "status": "skipped",
+                "reason": f"price {price:.2f} exceeds capital {settings.CAPITAL_PER_TRADE}",
+            })
+            continue
 
         # Create signal record
         signal_id_str = await generate_signal_id(db)
@@ -119,47 +127,48 @@ async def receive_webhook(
         await db.commit()
         await db.refresh(signal)
 
-        # ── Auto-create trade (paper trading) ──────────────────────────────
+        # Telegram alert for the signal
+        await notify_new_signal(
+            symbol=symbol,
+            signal_type="BUY",
+            price=price or 0.0,
+            strategy=strategy_name,
+            signal_id=signal_id_str,
+        )
+
+        # Auto-create trade (paper trading) via open_trade() to keep Redis cache in sync
         trade_result = None
         if price and price > 0:
             try:
-                from app.models.trade import Trade
-                from app.services.trade_service import generate_trade_id
+                from app.services.trade_service import open_trade
 
                 capital = settings.CAPITAL_PER_TRADE
                 quantity = max(1, int(capital / price))
-                # ── Risk parameters ─────────────────────────────────────────
-                # SL   = -1.5% hard stop from entry (always active)
-                # TP   = +0.5% initial target — once hit, lock profit & trail
-                # TSL  = -0.5% below highest price seen AFTER TP is hit
                 stop_loss    = round(price * (1 - 0.015), 2)  # -1.5% hard SL
                 target_price = round(price * (1 + 0.005), 2)  # +0.5% initial TP
                 # trailing_sl and highest_price are NULL at entry
                 # they are set by the scheduler ONLY after TP is first touched
 
-                trade_id_str = await generate_trade_id(db)
-                trade = Trade(
-                    id=uuid.uuid4(),
-                    trade_id=trade_id_str,
-                    signal_id=signal.id,
-                    strategy_id=strategy_id,
-                    symbol=symbol,
-                    signal_type="BUY",
-                    entry_price=price,
-                    stop_loss=stop_loss,
-                    target_price=target_price,
-                    trailing_sl=None,        # activated only after TP hit
-                    highest_price=None,      # tracking starts after TP hit
-                    tp_hit=False,
-                    quantity=quantity,
-                    status="entered",
+                trade = await open_trade(
+                    data={
+                        "signal_id": signal.id,
+                        "strategy_id": strategy_id,
+                        "symbol": symbol,
+                        "signal_type": "BUY",
+                        "entry_price": price,
+                        "stop_loss": stop_loss,
+                        "target_price": target_price,
+                        "quantity": quantity,
+                    },
+                    db=db,
+                    redis=redis,
                 )
-                db.add(trade)
+                # Mark signal as entered
                 signal.status = "entered"
                 await db.commit()
-                await db.refresh(trade)
+
                 trade_result = {
-                    "trade_id": trade_id_str,
+                    "trade_id": trade.trade_id,
                     "quantity": quantity,
                     "entry_price": price,
                     "stop_loss": stop_loss,
@@ -169,15 +178,6 @@ async def receive_webhook(
                 }
             except Exception as e:
                 trade_result = {"error": str(e)}
-
-        # Telegram alert
-        await notify_new_signal(
-            symbol=symbol,
-            signal_type="BUY",
-            price=price or 0.0,
-            strategy=strategy_name,
-            signal_id=signal_id_str,
-        )
 
         results.append({
             "symbol": symbol,
