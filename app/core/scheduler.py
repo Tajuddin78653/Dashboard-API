@@ -23,6 +23,7 @@ MARKET_CLOSE = time(15, 30)
 SL_PCT    = 0.015   # Hard stop loss  = -1.5% from entry  (always active)
 TP_PCT    = 0.005   # Initial target  = +0.5% from entry  (phase 1)
 TRAIL_PCT = 0.005   # Trailing gap    = -0.5% below peak  (phase 2, after TP hit)
+MIN_LOCK_PCT = 0.002  # Minimum profit lock = +0.2% above entry (TSL floor after TP hit)
 
 
 def _is_market_hours() -> bool:
@@ -94,9 +95,14 @@ async def monitor_open_trades() -> None:
                                     trade.symbol, price, tp_level)
                         trade.tp_hit        = True
                         trade.highest_price = round(price, 2)
-                        trade.trailing_sl   = round(price * (1 - TRAIL_PCT), 2)
+                        # MIN LOCK: TSL must be at least entry + MIN_LOCK_PCT above entry
+                        # This prevents breakeven/loss exits when price barely touches TP
+                        min_lock_sl         = round(trade.entry_price * (1 + MIN_LOCK_PCT), 2)
+                        tsl_from_peak       = round(price * (1 - TRAIL_PCT), 2)
+                        trade.trailing_sl   = max(tsl_from_peak, min_lock_sl)
                         await db.commit()
-                        logger.info("  Trailing SL set to %.2f", trade.trailing_sl)
+                        logger.info("  Trailing SL set to %.2f (min_lock=%.2f, from_peak=%.2f)",
+                                    trade.trailing_sl, min_lock_sl, tsl_from_peak)
 
                 # PHASE 2: profit locked, trail behind the peak
                 # Extra guard: trailing_sl MUST be set — if somehow NULL, recalculate from highest
@@ -107,10 +113,12 @@ async def monitor_open_trades() -> None:
                     if price > highest:
                         highest = round(price, 2)
                         trade.highest_price = highest
-                        trade.trailing_sl   = round(highest * (1 - TRAIL_PCT), 2)
+                        min_lock_sl         = round(trade.entry_price * (1 + MIN_LOCK_PCT), 2)
+                        tsl_from_peak       = round(highest * (1 - TRAIL_PCT), 2)
+                        trade.trailing_sl   = max(tsl_from_peak, min_lock_sl)
                         await db.commit()
-                        logger.info("TSL raised: %s  new_peak=%.2f  tsl=%.2f",
-                                    trade.symbol, highest, trade.trailing_sl)
+                        logger.info("TSL raised: %s  new_peak=%.2f  tsl=%.2f (min_lock=%.2f)",
+                                    trade.symbol, highest, trade.trailing_sl, min_lock_sl)
 
                     # Use stored trailing_sl; if NULL for any reason, derive from highest
                     current_tsl = trade.trailing_sl
