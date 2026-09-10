@@ -110,12 +110,12 @@ async def receive_webhook(
         if price and price > 0:
             _qty = max(1, int(settings.CAPITAL_PER_TRADE / price))
             _gross_at_tp = round(_qty * price * 0.005, 2)
-            if _gross_at_tp < 30:
+            if _gross_at_tp < 20:
                 logger.info("Min-profit guard: skipping %s — gross at TP=%.2f < Rs.30", symbol, _gross_at_tp)
                 results.append({
                     "symbol": symbol,
                     "status": "skipped",
-                    "reason": f"gross at TP too low: Rs.{_gross_at_tp} (min Rs.30)",
+                    "reason": f"gross at TP too low: Rs.{_gross_at_tp} (min Rs.20)",
                 })
             continue
 
