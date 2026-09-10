@@ -1,6 +1,9 @@
+import logging
 import re
 import uuid
 from datetime import date, datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
