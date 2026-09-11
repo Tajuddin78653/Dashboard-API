@@ -102,22 +102,22 @@ async def receive_webhook(
                 "status": "skipped",
                 "reason": f"price {price:.2f} exceeds capital {settings.CAPITAL_PER_TRADE}",
             })
+            continue
 
-        # Min-profit guard: skip stocks where gross profit at TP (+0.5%) < Rs.30
-        # Formula: qty = capital/price, gross_at_tp = qty * price * 0.005
-        #          simplified: gross_at_tp = capital * 0.005 = 50 (fixed for Rs.10000 capital)
-        # But for low-price stocks with odd qty, actual gross may differ — check exactly
+        # Min-profit guard: skip stocks where gross profit at TP (+0.5%) < Rs.20
         if price and price > 0:
             _qty = max(1, int(settings.CAPITAL_PER_TRADE / price))
             _gross_at_tp = round(_qty * price * 0.005, 2)
             if _gross_at_tp < 20:
-                logger.info("Min-profit guard: skipping %s — gross at TP=%.2f < Rs.30", symbol, _gross_at_tp)
+                logger.info("Min-profit guard: skipping %s - gross at TP=%.2f < Rs.20", symbol, _gross_at_tp)
                 results.append({
                     "symbol": symbol,
                     "status": "skipped",
                     "reason": f"gross at TP too low: Rs.{_gross_at_tp} (min Rs.20)",
                 })
-            continue
+                continue
+
+
 
         # Create signal record
         signal_id_str = await generate_signal_id(db)
