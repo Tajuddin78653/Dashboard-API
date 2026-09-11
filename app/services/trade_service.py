@@ -50,17 +50,14 @@ async def open_trade(data: dict, db: AsyncSession, redis) -> Trade:
 
     # Cache open trade fields in Redis
     capital = data["entry_price"] * data["quantity"]
-    await redis.hset(
-        f"open_trade:{trade_id}",
-        mapping={
-            "symbol": data["symbol"],
-            "entry_price": str(data["entry_price"]),
-            "stop_loss": str(data["stop_loss"]),
-            "target_price": str(data["target_price"]),
-            "quantity": str(data["quantity"]),
-            "signal_type": data.get("signal_type", "BUY"),
-        },
-    )
+    # Upstash Redis SDK uses individual key-value pairs, not mapping= kwarg
+    _trade_key = f"open_trade:{trade_id}"
+    await redis.hset(_trade_key, "symbol",       data["symbol"])
+    await redis.hset(_trade_key, "entry_price",  str(data["entry_price"]))
+    await redis.hset(_trade_key, "stop_loss",    str(data["stop_loss"]))
+    await redis.hset(_trade_key, "target_price", str(data["target_price"]))
+    await redis.hset(_trade_key, "quantity",     str(data["quantity"]))
+    await redis.hset(_trade_key, "signal_type",  data.get("signal_type", "BUY"))
 
     await notify_trade_entry(
         trade_id=trade_id,
