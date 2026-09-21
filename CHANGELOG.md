@@ -4,6 +4,12 @@ All notable changes are documented here. Each version is tagged in Git for insta
 
 ---
 
+## [v1.2-dhan] — 2025
+### Fixed
+- **JWT payload** — `create_access_token` now embeds `name`, `email`, `role` in token — previously only `sub` + `exp` were included, causing all frontend role/name reads to fail
+
+---
+
 ## [v1.1-dhan] — 2025
 ### Added
 - `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN` settings in config.py

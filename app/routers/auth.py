@@ -29,7 +29,12 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
             detail="Inactive user",
         )
 
-    token = create_access_token({"sub": str(user.id)})
+    token = create_access_token({
+        "sub":   str(user.id),
+        "name":  user.name,
+        "email": user.email,
+        "role":  user.role,
+    })
     return TokenResponse(access_token=token, user=UserResponse.model_validate(user))
 
 
