@@ -20,10 +20,8 @@ MARKET_OPEN  = time(9, 15)
 MARKET_CLOSE = time(15, 30)
 
 # Risk constants
-SL_PCT    = 0.015   # Hard stop loss  = -1.5% from entry  (always active)
-TP_PCT    = 0.005   # Initial target  = +0.5% from entry  (phase 1)
-TRAIL_PCT = 0.005   # Trailing gap    = -0.5% below peak  (phase 2, after TP hit)
-MIN_LOCK_PCT = 0.002  # Minimum profit lock = +0.2% above entry (TSL floor after TP hit)
+SL_PCT = 0.01   # Hard stop loss = -1% from entry (always active)
+TP_PCT = 0.01   # Take profit    = +1% from entry (auto-exit, no trailing)
 
 
 def _is_market_hours() -> bool:
@@ -34,21 +32,12 @@ def _is_market_hours() -> bool:
 
 async def monitor_open_trades() -> None:
     """
-    Every 60s during market hours - two-phase exit logic:
+    Every 60s during market hours - simple fixed exit logic:
 
-    PHASE 1  (tp_hit is not True):
-       Hard SL    : price <= entry x (1 - 1.5%)   EXIT "sl-hit"
-       Initial TP : price >= entry x (1 + 0.5%)   lock profit, enter Phase 2
-                    Set tp_hit=True, highest_price=price, trailing_sl=price*(1-0.5%)
+    SL  : price <= entry x (1 - 1%)  → EXIT "sl-hit"
+    TP  : price >= entry x (1 + 1%)  → EXIT "target-hit"
 
-    PHASE 2  (tp_hit is True AND trailing_sl is set):
-       Price rises  -> update highest_price -> raise trailing_sl to (highest * 0.995)
-       Trailing SL  : price <= trailing_sl   EXIT "trailing-sl-hit"  (profit secured)
-       Hard SL      : price <= hard_sl        EXIT "sl-hit"           (safety net)
-
-    NOTE: tp_hit is checked with `trade.tp_hit is True` (not `not trade.tp_hit`) to
-    correctly handle NULL values that may exist from older rows — NULL must behave
-    as Phase 1 (not yet hit TP), never as Phase 2.
+    No trailing SL. Trade closes immediately on either trigger.
     """
     if not _is_market_hours():
         return
@@ -80,64 +69,13 @@ async def monitor_open_trades() -> None:
                 hard_sl  = round(trade.entry_price * (1 - SL_PCT), 2)
                 tp_level = round(trade.entry_price * (1 + TP_PCT),  2)
 
-                # PHASE 1: tp_hit must be explicitly True to be in Phase 2
-                # NULL or False both mean Phase 1 (waiting for initial TP)
-                if trade.tp_hit is not True:
+                if price <= hard_sl:
+                    logger.info("SL hit: %s @ %.2f  SL=%.2f", trade.symbol, price, hard_sl)
+                    await close_trade(trade, price, "sl-hit", db, redis)
 
-                    if price <= hard_sl:
-                        logger.info("SL hit (Phase 1): %s @ %.2f  SL=%.2f",
-                                    trade.symbol, price, hard_sl)
-                        await close_trade(trade, price, "sl-hit", db, redis)
-
-                    elif price >= tp_level:
-                        # TP touched - lock profit, activate trailing
-                        logger.info("TP hit (Phase 1): %s @ %.2f  TP=%.2f - activating trailing",
-                                    trade.symbol, price, tp_level)
-                        trade.tp_hit        = True
-                        trade.highest_price = round(price, 2)
-                        # MIN LOCK: TSL must be at least entry + MIN_LOCK_PCT above entry
-                        # This prevents breakeven/loss exits when price barely touches TP
-                        min_lock_sl         = round(trade.entry_price * (1 + MIN_LOCK_PCT), 2)
-                        tsl_from_peak       = round(price * (1 - TRAIL_PCT), 2)
-                        trade.trailing_sl   = max(tsl_from_peak, min_lock_sl)
-                        await db.commit()
-                        logger.info("  Trailing SL set to %.2f (min_lock=%.2f, from_peak=%.2f)",
-                                    trade.trailing_sl, min_lock_sl, tsl_from_peak)
-
-                # PHASE 2: profit locked, trail behind the peak
-                # Extra guard: trailing_sl MUST be set — if somehow NULL, recalculate from highest
-                else:
-                    highest = trade.highest_price or price
-
-                    # Raise trailing SL as price moves higher
-                    if price > highest:
-                        highest = round(price, 2)
-                        trade.highest_price = highest
-                        min_lock_sl         = round(trade.entry_price * (1 + MIN_LOCK_PCT), 2)
-                        tsl_from_peak       = round(highest * (1 - TRAIL_PCT), 2)
-                        trade.trailing_sl   = max(tsl_from_peak, min_lock_sl)
-                        await db.commit()
-                        logger.info("TSL raised: %s  new_peak=%.2f  tsl=%.2f (min_lock=%.2f)",
-                                    trade.symbol, highest, trade.trailing_sl, min_lock_sl)
-
-                    # Use stored trailing_sl; if NULL for any reason, derive from highest
-                    current_tsl = trade.trailing_sl
-                    if current_tsl is None:
-                        current_tsl = round(highest * (1 - TRAIL_PCT), 2)
-                        trade.trailing_sl = current_tsl
-                        await db.commit()
-                        logger.warning("trailing_sl was NULL in Phase 2 for %s — recalculated to %.2f",
-                                       trade.symbol, current_tsl)
-
-                    if price <= current_tsl:
-                        logger.info("Trailing SL hit (Phase 2): %s @ %.2f  TSL=%.2f",
-                                    trade.symbol, price, current_tsl)
-                        await close_trade(trade, price, "trailing-sl-hit", db, redis)
-
-                    elif price <= hard_sl:
-                        logger.info("Hard SL hit (Phase 2): %s @ %.2f  SL=%.2f",
-                                    trade.symbol, price, hard_sl)
-                        await close_trade(trade, price, "sl-hit", db, redis)
+                elif price >= tp_level:
+                    logger.info("TP hit: %s @ %.2f  TP=%.2f", trade.symbol, price, tp_level)
+                    await close_trade(trade, price, "target-hit", db, redis)
 
     except Exception as exc:
         logger.error("monitor_open_trades error: %s", exc)
