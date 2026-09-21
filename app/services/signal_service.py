@@ -162,10 +162,8 @@ async def receive_webhook(
 
                 capital = settings.CAPITAL_PER_TRADE
                 quantity = max(1, int(capital / price))
-                stop_loss    = round(price * (1 - 0.015), 2)  # -1.5% hard SL
-                target_price = round(price * (1 + 0.005), 2)  # +0.5% initial TP
-                # trailing_sl and highest_price are NULL at entry
-                # they are set by the scheduler ONLY after TP is first touched
+                stop_loss    = round(price * (1 - 0.01), 2)  # -1% hard SL
+                target_price = round(price * (1 + 0.01), 2)  # +1% take profit (auto-exit)
 
                 trade = await open_trade(
                     data={
@@ -191,7 +189,6 @@ async def receive_webhook(
                     "entry_price": price,
                     "stop_loss": stop_loss,
                     "target_price": target_price,
-                    "trailing_sl": "activates after TP hit",
                     "capital_deployed": round(price * quantity, 2),
                 }
             except Exception as e:
