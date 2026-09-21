@@ -41,6 +41,7 @@ class Trade(Base):
         String(20), nullable=False, default="entered"
     )
     reason: Mapped[str] = mapped_column(String(100), nullable=True)
+    dhan_order_id: Mapped[str] = mapped_column(String(50), nullable=True)  # Dhan order ID (live trading only)
     entry_time: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

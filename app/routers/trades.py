@@ -93,6 +93,7 @@ async def get_open_positions(
             quantity=trade.quantity,
             status=trade.status,
             entry_time=trade.entry_time,
+            dhan_order_id=trade.dhan_order_id,
         ))
 
     return positions

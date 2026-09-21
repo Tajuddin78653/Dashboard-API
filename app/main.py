@@ -42,8 +42,23 @@ async def lifespan(app: FastAPI):
             """))
             await db.commit()
             logger.info("Auto-migrate 0004: webhook_token column ready")
+
+            # Migration 0005: add dhan_order_id column to trades
+            await db.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='trades' AND column_name='dhan_order_id'
+                    ) THEN
+                        ALTER TABLE trades ADD COLUMN dhan_order_id VARCHAR(50);
+                    END IF;
+                END $$;
+            """))
+            await db.commit()
+            logger.info("Auto-migrate 0005: dhan_order_id column ready")
     except Exception as e:
-        logger.warning("Auto-migrate 0004 skipped: %s", e)
+        logger.warning("Auto-migrate skipped: %s", e)
 
     try:
         from app.core.redis_client import get_redis

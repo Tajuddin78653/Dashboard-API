@@ -33,6 +33,14 @@ async def get_config(
             return f"{BASE_URL}/webhook/chartink/{s.webhook_token}"
         return f"{BASE_URL}{legacy_path}"
 
+    # Dhan: mask client ID — show first 3 chars + asterisks so user can confirm it's set
+    dhan_configured = bool(settings.DHAN_CLIENT_ID and settings.DHAN_ACCESS_TOKEN)
+    dhan_client_id_hint = (
+        settings.DHAN_CLIENT_ID[:3] + "*" * max(0, len(settings.DHAN_CLIENT_ID) - 3)
+        if settings.DHAN_CLIENT_ID
+        else ""
+    )
+
     return {
         # Secure token-based URLs (shown in Admin page for copy-paste into Chartink)
         "webhook_url_bot1": webhook_url("Chartink Webhook", "/webhook/chartink"),
@@ -40,12 +48,15 @@ async def get_config(
         # Token values separately (so Admin UI can show/hide them)
         "webhook_token_bot1": strategies.get("Chartink Webhook", None) and strategies["Chartink Webhook"].webhook_token,
         "webhook_token_bot2": strategies.get("Chartink Webhook 2", None) and strategies["Chartink Webhook 2"].webhook_token,
-        # Other config
+        # Trading config
         "paper_trading": settings.PAPER_TRADING,
         "capital_per_trade": settings.CAPITAL_PER_TRADE,
         "force_exit_time": settings.FORCE_EXIT_TIME,
         "telegram_bot1_configured": bool(settings.BOT_TOKEN and settings.CHAT_ID),
         "telegram_bot2_configured": bool(settings.BOT2_TOKEN and settings.BOT2_CHAT_ID),
+        # Dhan broker
+        "dhan_configured": dhan_configured,
+        "dhan_client_id_hint": dhan_client_id_hint,
     }
 
 

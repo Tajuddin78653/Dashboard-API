@@ -39,6 +39,7 @@ class TradeResponse(BaseModel):
     net_pnl: float | None = None
     status: str
     reason: str | None = None
+    dhan_order_id: str | None = None
     entry_time: datetime
     exit_time: datetime | None = None
     strategy_id: UUID | None = None
@@ -59,6 +60,7 @@ class OpenPositionResponse(BaseModel):
     quantity: int
     status: str
     entry_time: datetime
+    dhan_order_id: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 

@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     PAPER_TRADING: bool = True
     CAPITAL_PER_TRADE: float = 10000.0
     FORCE_EXIT_TIME: str = "15:12"
+    # Dhan broker credentials — only required when PAPER_TRADING=false
+    DHAN_CLIENT_ID: str = ""
+    DHAN_ACCESS_TOKEN: str = ""
     # Store as comma-separated string — avoids pydantic-settings JSON parsing issues
     CORS_ORIGINS_STR: str = "http://localhost:3000"
     # Allow all origins flag — set to true in Render env to bypass CORS for all origins
