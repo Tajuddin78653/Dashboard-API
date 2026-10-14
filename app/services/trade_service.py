@@ -23,13 +23,14 @@ async def generate_trade_id(db: AsyncSession) -> str:
 async def open_trade(data: dict, db: AsyncSession, redis) -> Trade:
     """Create a new trade record and notify via Telegram."""
     trade_id = await generate_trade_id(db)
+    signal_type = data.get("signal_type", "BUY")
     trade = Trade(
         id=uuid.uuid4(),
         trade_id=trade_id,
         signal_id=data.get("signal_id"),
         strategy_id=data.get("strategy_id"),
         symbol=data["symbol"],
-        signal_type=data.get("signal_type", "BUY"),
+        signal_type=signal_type,
         entry_price=data["entry_price"],
         stop_loss=data["stop_loss"],
         target_price=data["target_price"],
@@ -57,7 +58,7 @@ async def open_trade(data: dict, db: AsyncSession, redis) -> Trade:
     await redis.hset(_trade_key, "stop_loss",    str(data["stop_loss"]))
     await redis.hset(_trade_key, "target_price", str(data["target_price"]))
     await redis.hset(_trade_key, "quantity",     str(data["quantity"]))
-    await redis.hset(_trade_key, "signal_type",  data.get("signal_type", "BUY"))
+    await redis.hset(_trade_key, "signal_type",  signal_type)
 
     await notify_trade_entry(
         trade_id=trade_id,
@@ -67,6 +68,7 @@ async def open_trade(data: dict, db: AsyncSession, redis) -> Trade:
         sl=data["stop_loss"],
         tp=data["target_price"],
         capital=capital,
+        signal_type=signal_type,
     )
 
     return trade
@@ -80,13 +82,14 @@ async def close_trade(trade: Trade, exit_price: float, reason: str, db: AsyncSes
     charges = calc_charges(trade.entry_price, exit_price, trade.quantity)
     net_pnl = round(gross_pnl - charges, 2)
 
-    # Map exit reason → trade/signal status
+    # Map exit reason to trade/signal status
     status_map = {
         "target-hit":      "target-hit",
         "sl-hit":          "sl-hit",
-        "trailing-sl-hit": "trailing-sl-hit",   # profit-secured trailing exit
+        "trailing-sl-hit": "trailing-sl-hit",
         "force-exit-eod":  "exited",
         "manual-exit":     "exited",
+        "weekly-cleanup":  "exited",
     }
     final_status = status_map.get(reason, "exited")
 
@@ -98,9 +101,7 @@ async def close_trade(trade: Trade, exit_price: float, reason: str, db: AsyncSes
     trade.reason = reason
     trade.exit_time = datetime.now(timezone.utc)
 
-    # ── Sync linked Signal status to match trade outcome ─────────────────────
-    # This ensures the Live Signals page shows the correct status badge
-    # (sl-hit / target-hit / trailing-sl-hit / exited) instead of staying "entered"
+    # Sync linked Signal status to match trade outcome
     if trade.signal_id:
         sig_result = await db.execute(select(Signal).where(Signal.id == trade.signal_id))
         signal = sig_result.scalar_one_or_none()
