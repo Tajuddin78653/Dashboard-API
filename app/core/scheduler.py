@@ -130,6 +130,95 @@ async def eod_summary() -> None:
         logger.error("eod_summary error: %s", exc)
 
 
+
+
+async def weekly_cleanup() -> None:
+    """
+    Every Sunday at 11:00 PM IST — wipe all trades + signals for a fresh week.
+
+    Flow:
+      1. Force-exit any open trades at current price (safety net)
+      2. Delete ALL trades from DB
+      3. Delete ALL signals from DB
+      4. Clear all Redis keys (open_trade:*, traded_today:*, prices:*)
+      5. Send Telegram summary of the week + cleanup confirmation
+    """
+    logger.info("Weekly cleanup starting — wiping all trades and signals...")
+    try:
+        async with AsyncSessionLocal() as db:
+            from sqlalchemy import text
+            from app.models.signal import Signal
+
+            # Step 1: Force-exit any open trades first
+            result = await db.execute(select(Trade).where(Trade.status == "entered"))
+            open_trades = result.scalars().all()
+            if open_trades:
+                symbols = list({t.symbol for t in open_trades})
+                prices  = await get_prices_batch(symbols)
+                redis   = await get_redis()
+                for trade in open_trades:
+                    price = prices.get(trade.symbol, trade.entry_price)
+                    await close_trade(trade, price, "weekly-cleanup", db, redis)
+                logger.info("Force-exited %d open trades before cleanup", len(open_trades))
+
+            # Step 2: Calculate weekly P&L before deleting
+            result_all = await db.execute(select(Trade))
+            all_trades = result_all.scalars().all()
+            total_trades  = len(all_trades)
+            winners       = sum(1 for t in all_trades if (t.net_pnl or 0) > 0)
+            losers        = total_trades - winners
+            weekly_pnl    = sum(t.net_pnl or 0 for t in all_trades)
+
+            # Step 3: Delete all trades
+            await db.execute(text("DELETE FROM trades"))
+            await db.commit()
+            logger.info("Deleted all trades")
+
+            # Step 4: Delete all signals
+            await db.execute(text("DELETE FROM signals"))
+            await db.commit()
+            logger.info("Deleted all signals")
+
+            # Step 5: Clear Redis keys
+            try:
+                redis = await get_redis()
+                # Clear traded_today keys for the past 7 days
+                from datetime import timedelta
+                for i in range(7):
+                    day = (datetime.now(IST) - timedelta(days=i)).strftime("%Y-%m-%d")
+                    await redis.delete(f"traded_today:{day}")
+                logger.info("Cleared Redis dedup keys")
+            except Exception as e:
+                logger.warning("Redis cleanup partial: %s", e)
+
+            # Step 6: Send Telegram weekly summary
+            try:
+                from app.core.telegram import _send
+                week_end = datetime.now(IST).strftime("%d %b %Y")
+                msg = (
+                    f"\U0001f5d1 <b>Weekly Cleanup — TradeDash</b>\n"
+                    f"<code>{'─' * 30}</code>\n"
+                    f"\U0001f4c5 Week ending: {week_end}\n\n"
+                    f"\U0001f4ca <b>Weekly Summary</b>\n"
+                    f"  \U0001f3af Total Trades : {total_trades}\n"
+                    f"  \u2705 Winners     : {winners}\n"
+                    f"  \u274c Losers      : {losers}\n"
+                    f"  \U0001f4b0 Net P&amp;L    : \u20b9{weekly_pnl:+.2f}\n\n"
+                    f"\U0001f504 <b>Database wiped clean</b>\n"
+                    f"  All trades &amp; signals deleted\n"
+                    f"  Fresh start from Monday \U0001f680"
+                )
+                await _send(msg)
+            except Exception as e:
+                logger.warning("Weekly cleanup Telegram notification failed: %s", e)
+
+            logger.info(
+                "Weekly cleanup done — %d trades deleted, weekly P&L: %.2f",
+                total_trades, weekly_pnl
+            )
+
+    except Exception as exc:
+        logger.error("weekly_cleanup error: %s", exc)
 def create_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=IST)
 
