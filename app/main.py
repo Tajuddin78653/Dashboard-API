@@ -125,6 +125,7 @@ from app.routers.analytics import router as analytics_router
 from app.routers.reports import router as reports_router
 from app.routers.audit import router as audit_router
 from app.routers.admin import router as admin_router
+from app.routers.scanner import router as scanner_router
 
 app.include_router(auth_router, prefix="/auth")
 app.include_router(users_router, prefix="/users")
@@ -136,6 +137,7 @@ app.include_router(analytics_router, prefix="/analytics")
 app.include_router(reports_router, prefix="/reports")
 app.include_router(audit_router, prefix="/audit-logs")
 app.include_router(admin_router, prefix="/admin")
+app.include_router(scanner_router, prefix="/scanner")
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])
