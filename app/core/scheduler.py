@@ -19,9 +19,9 @@ IST = pytz.timezone("Asia/Kolkata")
 MARKET_OPEN  = time(9, 15)
 MARKET_CLOSE = time(15, 30)
 
-# Risk constants
-SL_PCT = 0.01   # Hard stop loss = -1% from entry (always active)
-TP_PCT = 0.01   # Take profit    = +1% from entry (auto-exit, no trailing)
+# Risk constants — applied symmetrically for BUY and SELL
+SL_PCT = 0.01   # Hard stop loss = 1% from entry
+TP_PCT = 0.01   # Take profit    = 1% from entry
 
 
 def _is_market_hours() -> bool:
@@ -32,12 +32,15 @@ def _is_market_hours() -> bool:
 
 async def monitor_open_trades() -> None:
     """
-    Every 60s during market hours - simple fixed exit logic:
+    Every 60s during market hours - fixed exit logic for both BUY and SELL:
 
-    SL  : price <= entry x (1 - 1%)   EXIT "sl-hit"
-    TP  : price >= entry x (1 + 1%)   EXIT "target-hit"
+    BUY  trade: profit when price rises
+      SL  : price <= entry x (1 - 1%)   EXIT "sl-hit"
+      TP  : price >= entry x (1 + 1%)   EXIT "target-hit"
 
-    No trailing SL. Trade closes immediately on either trigger.
+    SELL trade: profit when price falls
+      SL  : price >= entry x (1 + 1%)   EXIT "sl-hit"
+      TP  : price <= entry x (1 - 1%)   EXIT "target-hit"
     """
     if not _is_market_hours():
         return
@@ -67,15 +70,30 @@ async def monitor_open_trades() -> None:
                     continue
 
                 hard_sl  = round(trade.entry_price * (1 - SL_PCT), 2)
-                tp_level = round(trade.entry_price * (1 + TP_PCT),  2)
+                tp_level = round(trade.entry_price * (1 + TP_PCT), 2)
 
-                if price <= hard_sl:
-                    logger.info("SL hit: %s @ %.2f  SL=%.2f", trade.symbol, price, hard_sl)
-                    await close_trade(trade, price, "sl-hit", db, redis)
+                if trade.signal_type == "SELL":
+                    # SELL: SL is above entry, TP is below entry
+                    sell_sl = round(trade.entry_price * (1 + SL_PCT), 2)
+                    sell_tp = round(trade.entry_price * (1 - TP_PCT), 2)
 
-                elif price >= tp_level:
-                    logger.info("TP hit: %s @ %.2f  TP=%.2f", trade.symbol, price, tp_level)
-                    await close_trade(trade, price, "target-hit", db, redis)
+                    if price >= sell_sl:
+                        logger.info("SELL SL hit: %s @ %.2f  SL=%.2f", trade.symbol, price, sell_sl)
+                        await close_trade(trade, price, "sl-hit", db, redis)
+
+                    elif price <= sell_tp:
+                        logger.info("SELL TP hit: %s @ %.2f  TP=%.2f", trade.symbol, price, sell_tp)
+                        await close_trade(trade, price, "target-hit", db, redis)
+
+                else:
+                    # BUY: SL is below entry, TP is above entry
+                    if price <= hard_sl:
+                        logger.info("BUY SL hit: %s @ %.2f  SL=%.2f", trade.symbol, price, hard_sl)
+                        await close_trade(trade, price, "sl-hit", db, redis)
+
+                    elif price >= tp_level:
+                        logger.info("BUY TP hit: %s @ %.2f  TP=%.2f", trade.symbol, price, tp_level)
+                        await close_trade(trade, price, "target-hit", db, redis)
 
     except Exception as exc:
         logger.error("monitor_open_trades error: %s", exc)
