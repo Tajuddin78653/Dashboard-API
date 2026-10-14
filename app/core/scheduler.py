@@ -193,7 +193,7 @@ async def weekly_cleanup() -> None:
 
             # Step 6: Send Telegram weekly summary
             try:
-                from app.core.telegram import _send
+                from app.core.telegram import send_message
                 week_end = datetime.now(IST).strftime("%d %b %Y")
                 msg = (
                     f"\U0001f5d1 <b>Weekly Cleanup — TradeDash</b>\n"
@@ -208,7 +208,7 @@ async def weekly_cleanup() -> None:
                     f"  All trades &amp; signals deleted\n"
                     f"  Fresh start from Monday \U0001f680"
                 )
-                await _send(msg)
+                await send_message(msg)
             except Exception as e:
                 logger.warning("Weekly cleanup Telegram notification failed: %s", e)
 
