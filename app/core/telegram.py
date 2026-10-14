@@ -36,14 +36,17 @@ async def notify_new_signal(
 
 async def notify_trade_entry(
     trade_id: str, symbol: str, entry: float, qty: int,
-    sl: float, tp: float, capital: float
+    sl: float, tp: float, capital: float, signal_type: str = "BUY"
 ) -> None:
+    # Green circle for BUY (long), red circle for SELL (short)
+    dot = "\U0001f7e2" if signal_type == "BUY" else "\U0001f534"
+    direction = "LONG \u2197" if signal_type == "BUY" else "SHORT \u2198"
     msg = (
-        f"\U0001f7e2 <b>Trade Entry \u2014 TradeDash</b>\n"
+        f"{dot} <b>Trade Entry \u2014 TradeDash</b>\n"
         f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         f"\U0001f194 Trade    : {trade_id}\n"
         f"\U0001f4cc Symbol   : {symbol}\n"
-        f"\U0001f4b5 Entry    : \u20b9{entry:,.2f}\n"
+        f"\U0001f4b5 Entry    : \u20b9{entry:,.2f}  [{direction}]\n"
         f"\U0001f522 Qty      : {qty}\n"
         f"\U0001f6d1 SL       : \u20b9{sl:,.2f}\n"
         f"\U0001f3af TP       : \u20b9{tp:,.2f}\n"
@@ -63,8 +66,8 @@ async def notify_trade_exit(
         f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         f"\U0001f194 Trade    : {trade_id}\n"
         f"\U0001f4cc Symbol   : {symbol}\n"
-        f"\U0001f4b0 Entry    : \u20b9{entry:,.2f}  \u2192\u20b9{exit_p:,.2f}\n"
-        f"\U0001f49b Net P&L  : {sign}\u20b9{net_pnl:,.2f}\n"
+        f"\U0001f4b0 Entry    : \u20b9{entry:,.2f}  \u2192  \u20b9{exit_p:,.2f}\n"
+        f"\U0001f49b Net P&amp;L  : {sign}\u20b9{net_pnl:,.2f}\n"
         f"\U0001f4dd Reason   : {reason}\n"
     )
     await send_message(msg)
@@ -81,6 +84,6 @@ async def notify_eod_summary(
         f"\U0001f522 Total Trades : {total}\n"
         f"\u2705 Winners      : {winners}\n"
         f"\u274c Losers       : {losers}\n"
-        f"{emoji} Net P&L      : {sign}\u20b9{net_pnl:,.2f}\n"
+        f"{emoji} Net P&amp;L      : {sign}\u20b9{net_pnl:,.2f}\n"
     )
     await send_message(msg)
