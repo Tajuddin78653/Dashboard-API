@@ -1,5 +1,14 @@
 import logging
 
+
+    # Weekly cleanup every Sunday at 11:00 PM IST
+    # Wipes ALL trades + signals so Monday starts with clean fresh DB
+    scheduler.add_job(
+        weekly_cleanup, "cron",
+        day_of_week="sun",
+        hour=23, minute=0,
+        id="weekly_cleanup",
+    )
     return scheduler
 
     # Weekly cleanup every Sunday at 11:00 PM IST
