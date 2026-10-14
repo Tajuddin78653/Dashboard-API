@@ -1,28 +1,5 @@
 import logging
-
-
-    # Weekly cleanup every Sunday at 11:00 PM IST
-    # Wipes ALL trades + signals so Monday starts with clean fresh DB
-    scheduler.add_job(
-        weekly_cleanup, "cron",
-        day_of_week="sun",
-        hour=23, minute=0,
-        id="weekly_cleanup",
-    )
-    return scheduler
-
-    # Weekly cleanup every Sunday at 11:00 PM IST
-    # Wipes ALL trades + signals so Monday starts with clean DB
-    scheduler.add_job(
-        weekly_cleanup, "cron",
-        day_of_week="sun",
-        hour=23, minute=0,
-        id="weekly_cleanup",
-    )
-
-
-import logging
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timezone, timedelta
 
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -57,8 +34,8 @@ async def monitor_open_trades() -> None:
     """
     Every 60s during market hours - simple fixed exit logic:
 
-    SL  : price <= entry x (1 - 1%)  → EXIT "sl-hit"
-    TP  : price >= entry x (1 + 1%)  → EXIT "target-hit"
+    SL  : price <= entry x (1 - 1%)   EXIT "sl-hit"
+    TP  : price >= entry x (1 + 1%)   EXIT "target-hit"
 
     No trailing SL. Trade closes immediately on either trigger.
     """
@@ -86,7 +63,7 @@ async def monitor_open_trades() -> None:
             for trade in trades:
                 price = prices.get(trade.symbol)
                 if price is None:
-                    logger.warning("No live price for %s — skipping this tick", trade.symbol)
+                    logger.warning("No live price for %s - skipping this tick", trade.symbol)
                     continue
 
                 hard_sl  = round(trade.entry_price * (1 - SL_PCT), 2)
@@ -153,20 +130,18 @@ async def eod_summary() -> None:
         logger.error("eod_summary error: %s", exc)
 
 
-
-
 async def weekly_cleanup() -> None:
     """
-    Every Sunday at 11:00 PM IST — wipe all trades + signals for a fresh week.
+    Every Sunday at 11:00 PM IST - wipe all trades + signals for a fresh week.
 
     Flow:
       1. Force-exit any open trades at current price (safety net)
       2. Delete ALL trades from DB
       3. Delete ALL signals from DB
-      4. Clear all Redis keys (open_trade:*, traded_today:*, prices:*)
-      5. Send Telegram summary of the week + cleanup confirmation
+      4. Clear Redis dedup keys (traded_today:*)
+      5. Send Telegram weekly summary + cleanup confirmation
     """
-    logger.info("Weekly cleanup starting — wiping all trades and signals...")
+    logger.info("Weekly cleanup starting - wiping all trades and signals...")
     try:
         async with AsyncSessionLocal() as db:
             from sqlalchemy import text
@@ -187,10 +162,10 @@ async def weekly_cleanup() -> None:
             # Step 2: Calculate weekly P&L before deleting
             result_all = await db.execute(select(Trade))
             all_trades = result_all.scalars().all()
-            total_trades  = len(all_trades)
-            winners       = sum(1 for t in all_trades if (t.net_pnl or 0) > 0)
+            total_trades = len(all_trades)
+            winners      = sum(1 for t in all_trades if (t.net_pnl or 0) > 0)
             losers        = total_trades - winners
-            weekly_pnl    = sum(t.net_pnl or 0 for t in all_trades)
+            weekly_pnl   = sum(t.net_pnl or 0 for t in all_trades)
 
             # Step 3: Delete all trades
             await db.execute(text("DELETE FROM trades"))
@@ -202,11 +177,9 @@ async def weekly_cleanup() -> None:
             await db.commit()
             logger.info("Deleted all signals")
 
-            # Step 5: Clear Redis keys
+            # Step 5: Clear Redis dedup keys
             try:
                 redis = await get_redis()
-                # Clear traded_today keys for the past 7 days
-                from datetime import timedelta
                 for i in range(7):
                     day = (datetime.now(IST) - timedelta(days=i)).strftime("%Y-%m-%d")
                     await redis.delete(f"traded_today:{day}")
@@ -219,9 +192,8 @@ async def weekly_cleanup() -> None:
                 from app.core.telegram import send_message
                 week_end = datetime.now(IST).strftime("%d %b %Y")
                 msg = (
-                    f"\U0001f5d1 <b>Weekly Cleanup — TradeDash</b>\n"
-                    f"<code>{'─' * 30}</code>\n"
-                    f"\U0001f4c5 Week ending: {week_end}\n\n"
+                    f"\U0001f5d1 <b>Weekly Cleanup - TradeDash</b>\n"
+                    f"Week ending: {week_end}\n\n"
                     f"\U0001f4ca <b>Weekly Summary</b>\n"
                     f"  \U0001f3af Total Trades : {total_trades}\n"
                     f"  \u2705 Winners     : {winners}\n"
@@ -236,12 +208,14 @@ async def weekly_cleanup() -> None:
                 logger.warning("Weekly cleanup Telegram notification failed: %s", e)
 
             logger.info(
-                "Weekly cleanup done — %d trades deleted, weekly P&L: %.2f",
+                "Weekly cleanup done - %d trades deleted, weekly P&L: %.2f",
                 total_trades, weekly_pnl
             )
 
     except Exception as exc:
         logger.error("weekly_cleanup error: %s", exc)
+
+
 def create_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=IST)
 
@@ -263,6 +237,15 @@ def create_scheduler() -> AsyncIOScheduler:
         hour=15, minute=30,
         day_of_week="mon-fri",
         id="eod_summary",
+    )
+
+    # Weekly cleanup every Sunday at 11:00 PM IST
+    # Wipes ALL trades + signals so Monday starts with clean fresh DB
+    scheduler.add_job(
+        weekly_cleanup, "cron",
+        day_of_week="sun",
+        hour=23, minute=0,
+        id="weekly_cleanup",
     )
 
     return scheduler
