@@ -121,6 +121,21 @@ async def force_exit_all() -> None:
         logger.error("force_exit_all error: %s", exc)
 
 
+async def ema_scan_job() -> None:
+    """Every 5 min during market hours - run EMA crossover scan and cache to Redis."""
+    if not _is_market_hours():
+        return
+    try:
+        from app.services.ema_scanner import run_ema_scanner
+        result = await run_ema_scanner()
+        logger.info(
+            "EMA auto-scan: %d BUY, %d SELL, trend=%s",
+            result["buy_count"], result["sell_count"], result["market_trend"]
+        )
+    except Exception as exc:
+        logger.error("ema_scan_job error: %s", exc)
+
+
 async def eod_summary() -> None:
     """3:30 PM IST - send EOD P&L summary via Telegram."""
     try:
@@ -255,6 +270,11 @@ def create_scheduler() -> AsyncIOScheduler:
         hour=15, minute=30,
         day_of_week="mon-fri",
         id="eod_summary",
+    )
+
+    # EMA crossover scan every 5 minutes (market hours only — guarded inside job)
+    scheduler.add_job(
+        ema_scan_job, "interval", minutes=5, id="ema_scan",
     )
 
     # Weekly cleanup every Sunday at 11:00 PM IST
