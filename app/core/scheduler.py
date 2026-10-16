@@ -279,6 +279,7 @@ def create_scheduler() -> AsyncIOScheduler:
     # EMA crossover scan every 5 minutes (market hours only — guarded inside job)
     scheduler.add_job(
         ema_scan_job, "interval", minutes=5, id="ema_scan",
+        max_instances=1, misfire_grace_time=60,
     )
 
     # Weekly cleanup every Sunday at 11:00 PM IST
