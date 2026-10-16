@@ -65,10 +65,12 @@ async def get_open_positions(
     result = await db.execute(select(Trade).where(Trade.status == "entered"))
     trades = result.scalars().all()
 
+    # Perf fix: single mget instead of N serial redis.get calls
+    price_keys   = [f"prices:{t.symbol}" for t in trades]
+    cached_prices = await redis.mget(*price_keys) if price_keys else []
+
     positions = []
-    for trade in trades:
-        # Try cached price first
-        cached = await redis.get(f"prices:{trade.symbol}")
+    for trade, cached in zip(trades, cached_prices):
         current_price = float(cached) if cached else None
 
         mtm = None
