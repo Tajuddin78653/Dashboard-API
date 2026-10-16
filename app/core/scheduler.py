@@ -252,8 +252,12 @@ async def weekly_cleanup() -> None:
 def create_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=IST)
 
-    # Monitor open trades every 60 seconds
-    scheduler.add_job(monitor_open_trades, "interval", seconds=60, id="monitor")
+    # Monitor open trades every 60s — scoped to market hours via cron (no idle wakeups)
+    scheduler.add_job(
+        monitor_open_trades, "cron",
+        day_of_week="mon-fri", hour="9-15", minute="*", second="0",
+        id="monitor",
+    )
 
     # Force exit at configured time IST on weekdays
     force_h, force_m = (int(x) for x in settings.FORCE_EXIT_TIME.split(":"))
