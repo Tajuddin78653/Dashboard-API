@@ -3,11 +3,17 @@ from sqlalchemy.orm import declarative_base
 
 from app.config import settings
 
-# statement_cache_size=0 required for Supabase transaction pooler (pgbouncer)
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
+    # statement_cache_size=0 required for Supabase transaction pooler (pgbouncer)
     connect_args={"statement_cache_size": 0},
+    # Pool tuned for Supabase free tier (max 10 connections)
+    # 3 persistent + 2 overflow = 5 max total — leaves headroom for other tools
+    pool_size=3,
+    max_overflow=2,
+    pool_timeout=10,   # fail fast rather than queue forever
+    pool_recycle=1800, # recycle connections every 30 min (avoids stale conn errors)
 )
 
 AsyncSessionLocal = async_sessionmaker(
