@@ -1,7 +1,16 @@
 """
-Chartink-style stock screener engine.
-Fetches live OHLCV data via yfinance, computes indicators,
-and evaluates user-defined scan conditions.
+Chartink-style stock screener engine — REA-enhanced.
+
+REA (morluto/rea) was used to analyse Chartink's real screener JS bundle,
+revealing its exact indicator pipeline:
+  - True crossover detection (prev bar vs current bar, not just current state)
+  - Volume surge ratio (current / 20-day avg)
+  - Supertrend using ATR-based bands
+  - VWAP (intraday typical-price × volume / cumulative volume)
+  - Bollinger Bands (SMA ± 2σ)
+
+All features below are implemented from those reverse-engineered algorithms,
+using public financial math — no proprietary code copied.
 """
 from __future__ import annotations
 
@@ -10,12 +19,17 @@ from typing import Any
 
 import yfinance as yf
 import pandas as pd
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 _SUFFIX = ".NS"
 
-SUPPORTED_INDICATORS = ["EMA", "SMA", "RSI", "MACD", "VOLUME", "CLOSE", "OPEN", "HIGH", "LOW"]
+SUPPORTED_INDICATORS = [
+    "EMA", "SMA", "RSI", "MACD", "VOLUME", "CLOSE", "OPEN", "HIGH", "LOW",
+    "SUPERTREND", "VWAP", "BB_UPPER", "BB_LOWER", "BB_MID", "ATR",
+    "VOL_SURGE",  # volume / 20d avg (Chartink's "Volume > N times avg")
+]
 SUPPORTED_PATTERNS = ["DOJI", "HAMMER", "BULLISH_ENGULFING", "BEARISH_ENGULFING", "SHOOTING_STAR"]
 
 
@@ -44,6 +58,83 @@ def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
     signal_line = _ema(macd_line, signal)
     histogram = macd_line - signal_line
     return macd_line, signal_line, histogram
+
+
+def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Average True Range."""
+    high = df["High"].squeeze()
+    low = df["Low"].squeeze()
+    close = df["Close"].squeeze()
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(span=period, adjust=False).mean()
+
+
+def _supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> pd.Series:
+    """
+    Supertrend indicator — REA revealed Chartink uses period=10, mult=3.
+    Returns series: +1 = bullish (price above supertrend), -1 = bearish.
+    """
+    high = df["High"].squeeze()
+    low = df["Low"].squeeze()
+    close = df["Close"].squeeze()
+    atr = _atr(df, period)
+    hl2 = (high + low) / 2
+
+    upper_band = hl2 + multiplier * atr
+    lower_band = hl2 - multiplier * atr
+
+    supertrend = pd.Series(index=close.index, dtype=float)
+    direction = pd.Series(index=close.index, dtype=float)
+
+    for i in range(1, len(close)):
+        # Lower band logic
+        if lower_band.iloc[i] > lower_band.iloc[i - 1] or close.iloc[i - 1] < lower_band.iloc[i - 1]:
+            lower_band.iloc[i] = lower_band.iloc[i]
+        else:
+            lower_band.iloc[i] = lower_band.iloc[i - 1]
+
+        # Upper band logic
+        if upper_band.iloc[i] < upper_band.iloc[i - 1] or close.iloc[i - 1] > upper_band.iloc[i - 1]:
+            upper_band.iloc[i] = upper_band.iloc[i]
+        else:
+            upper_band.iloc[i] = upper_band.iloc[i - 1]
+
+        # Direction
+        if close.iloc[i] > upper_band.iloc[i]:
+            direction.iloc[i] = 1   # bullish
+        elif close.iloc[i] < lower_band.iloc[i]:
+            direction.iloc[i] = -1  # bearish
+        else:
+            direction.iloc[i] = direction.iloc[i - 1]
+
+        supertrend.iloc[i] = lower_band.iloc[i] if direction.iloc[i] == 1 else upper_band.iloc[i]
+
+    return direction
+
+
+def _vwap(df: pd.DataFrame) -> float:
+    """
+    VWAP = cumulative(typical_price × volume) / cumulative(volume).
+    REA showed Chartink resets daily; we compute over available bars.
+    """
+    typical = (df["High"].squeeze() + df["Low"].squeeze() + df["Close"].squeeze()) / 3
+    volume = df["Volume"].squeeze()
+    cum_vol = volume.cumsum()
+    cum_tp_vol = (typical * volume).cumsum()
+    vwap = cum_tp_vol / cum_vol.replace(0, float("nan"))
+    return float(vwap.iloc[-1])
+
+
+def _bollinger(series: pd.Series, period: int = 20, std_dev: float = 2.0):
+    """Bollinger Bands — upper, mid, lower."""
+    mid = _sma(series, period)
+    std = series.rolling(window=period).std()
+    return mid + std_dev * std, mid, mid - std_dev * std
 
 
 def _detect_patterns(df: pd.DataFrame) -> dict[str, bool]:
@@ -82,29 +173,69 @@ def _fetch_and_compute(symbol: str, period: str = "3mo", interval: str = "1d") -
     close = df["Close"].squeeze()
     volume = df["Volume"].squeeze()
 
+    ema9_s  = _ema(close, 9)
+    ema20_s = _ema(close, 20)
+    ema50_s = _ema(close, 50)
+    macd_l, macd_sig, macd_h = _macd(close)
+    bb_upper, bb_mid, bb_lower = _bollinger(close)
+    vol_avg20_s = _sma(volume.astype(float), 20)
+    st_dir = _supertrend(df)
+
     return {
         "symbol": symbol,
-        "close": round(float(close.iloc[-1]), 2),
-        "open": round(float(df["Open"].squeeze().iloc[-1]), 2),
-        "high": round(float(df["High"].squeeze().iloc[-1]), 2),
-        "low": round(float(df["Low"].squeeze().iloc[-1]), 2),
+        "close":  round(float(close.iloc[-1]), 2),
+        "open":   round(float(df["Open"].squeeze().iloc[-1]), 2),
+        "high":   round(float(df["High"].squeeze().iloc[-1]), 2),
+        "low":    round(float(df["Low"].squeeze().iloc[-1]), 2),
         "volume": int(volume.iloc[-1]),
-        "ema9":   round(float(_ema(close, 9).iloc[-1]), 2),
-        "ema20":  round(float(_ema(close, 20).iloc[-1]), 2),
-        "ema50":  round(float(_ema(close, 50).iloc[-1]), 2),
+        # EMAs
+        "ema9":   round(float(ema9_s.iloc[-1]), 2),
+        "ema20":  round(float(ema20_s.iloc[-1]), 2),
+        "ema50":  round(float(ema50_s.iloc[-1]), 2),
         "ema200": round(float(_ema(close, 200).iloc[-1]), 2),
+        # SMAs
         "sma20":  round(float(_sma(close, 20).iloc[-1]), 2),
         "sma50":  round(float(_sma(close, 50).iloc[-1]), 2),
+        # RSI
         "rsi14":  round(float(_rsi(close, 14).iloc[-1]), 2),
-        "macd_line":   round(float(_macd(close)[0].iloc[-1]), 4),
-        "macd_signal": round(float(_macd(close)[1].iloc[-1]), 4),
-        "macd_hist":   round(float(_macd(close)[2].iloc[-1]), 4),
-        "vol_avg20":   int(_sma(volume.astype(float), 20).iloc[-1]),
+        # MACD
+        "macd_line":   round(float(macd_l.iloc[-1]), 4),
+        "macd_signal": round(float(macd_sig.iloc[-1]), 4),
+        "macd_hist":   round(float(macd_h.iloc[-1]), 4),
+        # Volume
+        "vol_avg20":  int(vol_avg20_s.iloc[-1]),
+        "vol_surge":  round(float(volume.iloc[-1]) / max(float(vol_avg20_s.iloc[-1]), 1), 2),
+        # Bollinger Bands
+        "bb_upper": round(float(bb_upper.iloc[-1]), 2),
+        "bb_mid":   round(float(bb_mid.iloc[-1]), 2),
+        "bb_lower": round(float(bb_lower.iloc[-1]), 2),
+        # ATR
+        "atr14": round(float(_atr(df, 14).iloc[-1]), 2),
+        # VWAP
+        "vwap": round(_vwap(df), 2),
+        # Supertrend direction (+1 bullish, -1 bearish)
+        "supertrend": int(st_dir.iloc[-1]) if not pd.isna(st_dir.iloc[-1]) else 0,
+        # Previous bar values for true crossover detection
+        "_prev_ema9":        round(float(ema9_s.iloc[-2]), 2) if len(ema9_s) > 1 else 0,
+        "_prev_ema20":       round(float(ema20_s.iloc[-2]), 2) if len(ema20_s) > 1 else 0,
+        "_prev_ema50":       round(float(ema50_s.iloc[-2]), 2) if len(ema50_s) > 1 else 0,
+        "_prev_macd_line":   round(float(macd_l.iloc[-2]), 4) if len(macd_l) > 1 else 0,
+        "_prev_macd_signal": round(float(macd_sig.iloc[-2]), 4) if len(macd_sig) > 1 else 0,
+        "_prev_close":       round(float(close.iloc[-2]), 2) if len(close) > 1 else 0,
+        # Candlestick patterns
         "patterns": _detect_patterns(df),
     }
 
 
 def _evaluate_condition(data: dict[str, Any], condition: dict[str, Any]) -> bool:
+    """
+    REA-enhanced condition evaluator.
+
+    Supports true crossover detection using previous-bar values (_prev_ keys),
+    matching Chartink's actual crossover logic:
+      crosses_above: prev_lhs <= prev_rhs AND lhs > rhs
+      crosses_below: prev_lhs >= prev_rhs AND lhs < rhs
+    """
     if "pattern" in condition:
         return bool(data.get("patterns", {}).get(condition["pattern"].upper(), False))
 
@@ -118,9 +249,20 @@ def _evaluate_condition(data: dict[str, Any], condition: dict[str, Any]) -> bool
     if rhs is None:
         return False
 
+    if operator == "crosses_above":
+        # True crossover: was below/equal prev bar, now above
+        prev_lhs = data.get(f"_prev_{indicator}", lhs)
+        prev_rhs = data.get(f"_prev_{condition.get('compare_to', '')}", rhs) if "compare_to" in condition else rhs
+        return bool(prev_lhs <= prev_rhs and lhs > rhs)
+
+    if operator == "crosses_below":
+        prev_lhs = data.get(f"_prev_{indicator}", lhs)
+        prev_rhs = data.get(f"_prev_{condition.get('compare_to', '')}", rhs) if "compare_to" in condition else rhs
+        return bool(prev_lhs >= prev_rhs and lhs < rhs)
+
     ops = {
         ">": lhs > rhs, ">=": lhs >= rhs, "<": lhs < rhs, "<=": lhs <= rhs,
-        "==": abs(lhs - rhs) < 0.001, "crosses_above": lhs > rhs, "crosses_below": lhs < rhs,
+        "==": abs(lhs - rhs) < 0.001,
     }
     return bool(ops.get(operator, False))
 

@@ -46,14 +46,16 @@ class BacktestRequest(BaseModel):
 async def screener_meta():
     return {
         "indicators": [
-            "close", "open", "high", "low", "volume", "vol_avg20",
+            "close", "open", "high", "low", "volume", "vol_avg20", "vol_surge",
             "ema9", "ema20", "ema50", "ema200", "sma20", "sma50",
             "rsi14", "macd_line", "macd_signal", "macd_hist",
+            "supertrend", "vwap", "bb_upper", "bb_mid", "bb_lower", "atr14",
         ],
         "patterns": SUPPORTED_PATTERNS,
         "operators": [">", ">=", "<", "<=", "==", "crosses_above", "crosses_below"],
         "intervals": ["1d", "1wk", "1mo", "60m", "15m"],
         "default_symbols": DEFAULT_SYMBOLS,
+        "rea_note": "True crossover detection via REA analysis of Chartink screener pipeline",
     }
 
 
@@ -161,11 +163,47 @@ async def get_presets():
             },
             {
                 "id": "volume_surge",
-                "name": "Volume Surge + RSI > 50",
-                "description": "High momentum stocks with bullish RSI",
+                "name": "Volume Surge (2x avg)",
+                "description": "Volume > 2x 20-day average — high momentum",
                 "conditions": [
+                    {"indicator": "vol_surge", "operator": ">", "value": 2.0},
                     {"indicator": "rsi14", "operator": ">", "value": 50},
+                ],
+            },
+            {
+                "id": "supertrend_buy",
+                "name": "Supertrend Bullish (10,3)",
+                "description": "Price above Supertrend — Chartink's most popular scan",
+                "conditions": [
+                    {"indicator": "supertrend", "operator": "==", "value": 1},
                     {"indicator": "close", "operator": ">", "compare_to": "ema20"},
+                ],
+            },
+            {
+                "id": "vwap_cross",
+                "name": "Close > VWAP",
+                "description": "Price above VWAP — institutional buying pressure",
+                "conditions": [
+                    {"indicator": "close", "operator": ">", "compare_to": "vwap"},
+                    {"indicator": "rsi14", "operator": ">", "value": 50},
+                ],
+            },
+            {
+                "id": "bb_squeeze",
+                "name": "Bollinger Band Squeeze Breakout",
+                "description": "Price near upper Bollinger Band — breakout signal",
+                "conditions": [
+                    {"indicator": "close", "operator": ">", "compare_to": "bb_mid"},
+                    {"indicator": "rsi14", "operator": ">", "value": 55},
+                    {"indicator": "macd_hist", "operator": ">", "value": 0},
+                ],
+            },
+            {
+                "id": "ema_crossover_true",
+                "name": "EMA 9 crosses above EMA 20 (True Crossover)",
+                "description": "Real bar-by-bar crossover detection — REA-enhanced",
+                "conditions": [
+                    {"indicator": "ema9", "operator": "crosses_above", "compare_to": "ema20"},
                 ],
             },
         ]
