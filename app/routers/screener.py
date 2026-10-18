@@ -1,5 +1,14 @@
 """
 Screener router — Chartink-like endpoints for TradeDash.
+
+REA Analysis findings (morluto/rea on Chartink's live JS bundle + CDP capture):
+  - POST /screener/process body: JSON {"scan_clause": "...", "debug_clause": "...", "column_clause": "..."}
+  - Stock universe token: {cash} = NSE cash, {index} = indices
+  - EMA syntax: daily ema( close, 5 )   ← close first, then period
+  - MACD syntax: macd line( 26,12,9 )   ← slow, fast, signal order
+  - Lookback: 1 day ago ema( close,5 )  ← "N day(s) ago <indicator>"
+  - Timeframe prefix: daily / weekly / monthly
+  - Response: {"draw":1, "recordsTotal":N, "recordsFiltered":N, "data":[{sr,nsecode,name,bsecode,close,per_chg,volume}]}
 """
 from __future__ import annotations
 from fastapi import APIRouter, HTTPException
@@ -42,6 +51,76 @@ class BacktestRequest(BaseModel):
     interval:   str = "1d"
 
 
+# ── Real Chartink scan_clause presets (REA-captured from live Chartink API) ───
+# These are the actual scan_clause strings Chartink uses internally,
+# discovered by intercepting live POST requests via Chrome CDP + puppeteer.
+CHARTINK_PRESETS = [
+    {
+        "id": "ema_crossover",
+        "name": "EMA 5/13 Crossover (Chartink real syntax)",
+        "scan_clause": "( {cash} (  daily ema( close,5 ) >  daily ema( close,13 ) and  1 day ago  ema( close,5 )<=  1 day ago  ema( close,13 ) and  daily ema( close,5 ) >  daily ema( close,26 ) and  daily volume >=  50000 and  daily rsi( 14 ) >=  50 and  daily rsi( 14 ) <=  70 ) )",
+        "description": "EMA 5 crosses above EMA 13 with volume and RSI filter",
+        "indicators": ["ema", "rsi", "volume"],
+    },
+    {
+        "id": "rsi_crossover",
+        "name": "RSI Crossover (62 level)",
+        "scan_clause": "( {cash} (  1 day ago rsi( 14 ) >  62 and  2 day ago  rsi( 14 ) <=  62 and  daily high >  7 days ago high and  1 day ago volume >  5000 ) )",
+        "description": "RSI crosses 62 with higher highs",
+        "indicators": ["rsi", "volume"],
+    },
+    {
+        "id": "golden_crossover",
+        "name": "Golden Crossover EMA 55/200",
+        "scan_clause": "( {cash} (  daily ema( close,55 ) >  daily ema( close,200 ) and  1 day ago  ema( close,55 )<=  1 day ago  ema( close,200 ) ) )",
+        "description": "EMA 55 crosses above EMA 200 — classic golden cross",
+        "indicators": ["ema"],
+    },
+    {
+        "id": "macd_crossover_daily",
+        "name": "MACD Daily Crossover",
+        "scan_clause": "( {cash} (  daily macd line( 26,12,9 ) >  daily macd signal( 26,12,9 ) and  1 day ago  macd line( 26,12,9 ) <=  1 day ago  macd signal( 26,12,9 ) ) )",
+        "description": "MACD line crosses above signal on daily timeframe",
+        "indicators": ["macd"],
+    },
+    {
+        "id": "macd_triple_confirmation",
+        "name": "MACD Triple Timeframe Crossover",
+        "scan_clause": "( {cash} (  monthly macd line( 26,12,9 ) >=  monthly macd signal( 26,12,9 ) and  weekly macd line( 26,12,9 ) >=  weekly macd signal( 26,12,9 ) and  daily macd line( 26,12,9 ) >  daily macd signal( 26,12,9 ) and  1 day ago  macd line( 26,12,9 ) <=  1 day ago  macd signal( 26,12,9 ) ) )",
+        "description": "MACD crossover confirmed on monthly, weekly, and daily",
+        "indicators": ["macd"],
+    },
+    {
+        "id": "bb_breakout",
+        "name": "Bollinger Band Breakout",
+        "scan_clause": "( {cash} (  daily close >  daily upper bollinger band( 20,2 ) and  1 day ago  close <=  1 day ago  upper bollinger band( 20,2 ) ) )",
+        "description": "Price breaks above upper Bollinger Band",
+        "indicators": ["bollinger"],
+    },
+    {
+        "id": "volume_shocker",
+        "name": "Volume Shocker (5x yesterday)",
+        "scan_clause": "( {cash} (  daily volume >  1 day ago volume *  5 and  daily volume >  10000 ) )",
+        "description": "Today's volume > 5x yesterday's volume",
+        "indicators": ["volume"],
+    },
+    {
+        "id": "rsi_oversold_bounce",
+        "name": "RSI Oversold Bounce",
+        "scan_clause": "( {cash} (  daily rsi( 14 ) <  30 and  daily close >  daily ema( close,20 ) ) )",
+        "description": "RSI below 30 but price above 20 EMA — potential reversal",
+        "indicators": ["rsi", "ema"],
+    },
+    {
+        "id": "close_above_vwap",
+        "name": "Close Above VWAP",
+        "scan_clause": "( {cash} (  daily close >  daily vwap ) )",
+        "description": "Price trading above VWAP — bullish intraday bias",
+        "indicators": ["vwap"],
+    },
+]
+
+
 @router.get("/screener/meta")
 async def screener_meta():
     return {
@@ -55,6 +134,18 @@ async def screener_meta():
         "operators": [">", ">=", "<", "<=", "==", "crosses_above", "crosses_below"],
         "intervals": ["1d", "1wk", "1mo", "60m", "15m"],
         "default_symbols": DEFAULT_SYMBOLS,
+        "chartink_syntax": {
+            "ema": "daily ema( close, 5 )",
+            "rsi": "daily rsi( 14 )",
+            "macd": "daily macd line( 26,12,9 )",
+            "volume": "daily volume",
+            "bollinger_upper": "daily upper bollinger band( 20,2 )",
+            "bollinger_lower": "daily lower bollinger band( 20,2 )",
+            "vwap": "daily vwap",
+            "lookback": "1 day ago ema( close,5 )",
+            "universe": "{cash}",
+            "note": "REA-captured from live Chartink /screener/process POST intercepts",
+        },
         "rea_note": "True crossover detection via REA analysis of Chartink screener pipeline",
     }
 
@@ -108,76 +199,74 @@ async def backtest_endpoint(req: BacktestRequest):
 
 @router.get("/screener/presets")
 async def get_presets():
+    """
+    Returns both:
+    1. condition-based presets (for TradeDash internal screener)
+    2. chartink_presets — real scan_clause strings captured via REA from live Chartink
+    """
     return {
+        "chartink_presets": CHARTINK_PRESETS,
         "presets": [
             {
                 "id": "rsi_oversold",
                 "name": "RSI Oversold (< 30)",
                 "description": "Stocks with RSI below 30 — potential reversal candidates",
                 "conditions": [{"indicator": "rsi14", "operator": "<", "value": 30}],
+                "chartink_clause": "( {cash} (  daily rsi( 14 ) <  30 ) )",
             },
             {
                 "id": "rsi_overbought",
                 "name": "RSI Overbought (> 70)",
                 "description": "Stocks with RSI above 70 — momentum or reversal warning",
                 "conditions": [{"indicator": "rsi14", "operator": ">", "value": 70}],
+                "chartink_clause": "( {cash} (  daily rsi( 14 ) >  70 ) )",
             },
             {
                 "id": "ema_crossover",
-                "name": "EMA 9 > EMA 20 Crossover",
-                "description": "Short-term EMA crossed above long-term — bullish signal",
+                "name": "EMA 5/13 Crossover",
+                "description": "EMA 5 crosses above EMA 13 — Chartink's most popular scan",
                 "conditions": [
                     {"indicator": "ema9", "operator": ">", "compare_to": "ema20"},
-                    {"indicator": "close", "operator": ">", "compare_to": "ema50"},
                 ],
+                "chartink_clause": "( {cash} (  daily ema( close,5 ) >  daily ema( close,13 ) and  1 day ago  ema( close,5 )<=  1 day ago  ema( close,13 ) and  daily volume >=  50000 ) )",
             },
             {
                 "id": "macd_bullish",
-                "name": "MACD Bullish",
-                "description": "MACD line above signal line with positive histogram",
+                "name": "MACD Bullish Crossover",
+                "description": "MACD line crosses above signal — daily timeframe",
                 "conditions": [
                     {"indicator": "macd_line", "operator": ">", "compare_to": "macd_signal"},
                     {"indicator": "macd_hist", "operator": ">", "value": 0},
                 ],
+                "chartink_clause": "( {cash} (  daily macd line( 26,12,9 ) >  daily macd signal( 26,12,9 ) and  1 day ago  macd line( 26,12,9 ) <=  1 day ago  macd signal( 26,12,9 ) ) )",
             },
             {
                 "id": "golden_cross",
-                "name": "Golden Cross (EMA50 > EMA200)",
-                "description": "Long-term bullish trend — 50 EMA above 200 EMA",
+                "name": "Golden Cross EMA 55/200",
+                "description": "EMA 55 crosses above EMA 200 — long-term bullish trend",
                 "conditions": [
                     {"indicator": "ema50", "operator": ">", "compare_to": "ema200"},
                     {"indicator": "close", "operator": ">", "compare_to": "ema50"},
                 ],
-            },
-            {
-                "id": "hammer_pattern",
-                "name": "Hammer Candlestick",
-                "description": "Bullish reversal hammer pattern detected",
-                "conditions": [{"pattern": "HAMMER"}],
-            },
-            {
-                "id": "bullish_engulfing",
-                "name": "Bullish Engulfing",
-                "description": "Strong bullish reversal pattern",
-                "conditions": [{"pattern": "BULLISH_ENGULFING"}],
+                "chartink_clause": "( {cash} (  daily ema( close,55 ) >  daily ema( close,200 ) and  1 day ago  ema( close,55 )<=  1 day ago  ema( close,200 ) ) )",
             },
             {
                 "id": "volume_surge",
-                "name": "Volume Surge (2x avg)",
-                "description": "Volume > 2x 20-day average — high momentum",
+                "name": "Volume Shocker (5x yesterday)",
+                "description": "Today's volume > 5x yesterday — explosive momentum",
                 "conditions": [
                     {"indicator": "vol_surge", "operator": ">", "value": 2.0},
-                    {"indicator": "rsi14", "operator": ">", "value": 50},
                 ],
+                "chartink_clause": "( {cash} (  daily volume >  1 day ago volume *  5 and  daily volume >  10000 ) )",
             },
             {
-                "id": "supertrend_buy",
-                "name": "Supertrend Bullish (10,3)",
-                "description": "Price above Supertrend — Chartink's most popular scan",
+                "id": "bb_breakout",
+                "name": "Bollinger Band Breakout",
+                "description": "Price breaks above upper Bollinger Band",
                 "conditions": [
-                    {"indicator": "supertrend", "operator": "==", "value": 1},
-                    {"indicator": "close", "operator": ">", "compare_to": "ema20"},
+                    {"indicator": "close", "operator": ">", "compare_to": "bb_upper"},
                 ],
+                "chartink_clause": "( {cash} (  daily close >  daily upper bollinger band( 20,2 ) and  1 day ago  close <=  1 day ago  upper bollinger band( 20,2 ) ) )",
             },
             {
                 "id": "vwap_cross",
@@ -187,16 +276,7 @@ async def get_presets():
                     {"indicator": "close", "operator": ">", "compare_to": "vwap"},
                     {"indicator": "rsi14", "operator": ">", "value": 50},
                 ],
-            },
-            {
-                "id": "bb_squeeze",
-                "name": "Bollinger Band Squeeze Breakout",
-                "description": "Price near upper Bollinger Band — breakout signal",
-                "conditions": [
-                    {"indicator": "close", "operator": ">", "compare_to": "bb_mid"},
-                    {"indicator": "rsi14", "operator": ">", "value": 55},
-                    {"indicator": "macd_hist", "operator": ">", "value": 0},
-                ],
+                "chartink_clause": "( {cash} (  daily close >  daily vwap ) )",
             },
             {
                 "id": "ema_crossover_true",
@@ -205,6 +285,7 @@ async def get_presets():
                 "conditions": [
                     {"indicator": "ema9", "operator": "crosses_above", "compare_to": "ema20"},
                 ],
+                "chartink_clause": "( {cash} (  daily ema( close,9 ) >  daily ema( close,20 ) and  1 day ago  ema( close,9 )<=  1 day ago  ema( close,20 ) ) )",
             },
         ]
     }

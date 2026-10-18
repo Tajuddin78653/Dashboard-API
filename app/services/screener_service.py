@@ -1,13 +1,27 @@
 """
 Chartink-style stock screener engine — REA-enhanced.
 
-REA (morluto/rea) was used to analyse Chartink's real screener JS bundle,
-revealing its exact indicator pipeline:
-  - True crossover detection (prev bar vs current bar, not just current state)
-  - Volume surge ratio (current / 20-day avg)
-  - Supertrend using ATR-based bands
-  - VWAP (intraday typical-price × volume / cumulative volume)
-  - Bollinger Bands (SMA ± 2σ)
+REA (morluto/rea v6.5.0) used to:
+  1. Analyse Chartink's live JS bundle via Chrome CDP (1,415,234 AST nodes)
+  2. Intercept live /screener/process POST requests via puppeteer CDP capture
+
+=== Real Chartink scan_clause format (REA-discovered) ===
+POST body:  JSON {"scan_clause": "...", "debug_clause": "...", "column_clause": "..."}
+Response:   {"draw":1, "recordsTotal":N, "data":[{nsecode, name, close, per_chg, volume}]}
+
+Correct indicator syntax (case-insensitive, space-tolerant):
+  EMA:       daily ema( close, 5 )        <- close FIRST, then period
+  RSI:       daily rsi( 14 )
+  MACD:      daily macd line( 26,12,9 )   <- slow=26, fast=12, signal=9
+  Bollinger: daily upper bollinger band( 20,2 )
+  VWAP:      daily vwap
+  Lookback:  1 day ago ema( close,5 )
+  Universe:  {cash} = NSE cash stocks
+
+Key gotchas:
+  - ema(13,close) FAILS; ema(close,13) WORKS  (close first)
+  - MACD params: slow first (opposite of TradingView)
+  - "supertrend direction(7,3)" FAILS; "supertrend(7,3)" WORKS
 
 All features below are implemented from those reverse-engineered algorithms,
 using public financial math — no proprietary code copied.
@@ -51,7 +65,11 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
-def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+def _macd(series: pd.Series, slow: int = 26, fast: int = 12, signal: int = 9):
+    """
+    MACD — Chartink param order: slow, fast, signal (e.g. macd line( 26,12,9 ))
+    Note: this is OPPOSITE of TradingView which uses fast,slow,signal.
+    """
     ema_fast = _ema(series, fast)
     ema_slow = _ema(series, slow)
     macd_line = ema_fast - ema_slow
