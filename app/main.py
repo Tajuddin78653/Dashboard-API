@@ -127,6 +127,7 @@ from app.routers.audit import router as audit_router
 from app.routers.admin import router as admin_router
 from app.routers.scanner import router as scanner_router
 from app.routers.screener import router as screener_router
+from app.routers.websocket import router as websocket_router
 
 app.include_router(auth_router, prefix="/auth")
 app.include_router(users_router, prefix="/users")
@@ -140,6 +141,7 @@ app.include_router(audit_router, prefix="/audit-logs")
 app.include_router(admin_router, prefix="/admin")
 app.include_router(scanner_router, prefix="/scanner")
 app.include_router(screener_router, prefix="/api")
+app.include_router(websocket_router)
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])

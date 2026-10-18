@@ -41,11 +41,16 @@ async def monitor_open_trades() -> None:
     SELL trade: profit when price falls
       SL  : price >= entry x (1 + 1%)   EXIT "sl-hit"
       TP  : price <= entry x (1 - 1%)   EXIT "target-hit"
+
+    Broadcasts price_update and trade_closed events via WebSocket to all
+    connected frontend clients in real time.
     """
     if not _is_market_hours():
         return
 
     try:
+        from app.routers.websocket import manager as ws_manager
+
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(Trade).where(Trade.status == "entered"))
             trades = result.scalars().all()
@@ -71,29 +76,79 @@ async def monitor_open_trades() -> None:
 
                 hard_sl  = round(trade.entry_price * (1 - SL_PCT), 2)
                 tp_level = round(trade.entry_price * (1 + TP_PCT), 2)
+                exited   = False
 
                 if trade.signal_type == "SELL":
-                    # SELL: SL is above entry, TP is below entry
                     sell_sl = round(trade.entry_price * (1 + SL_PCT), 2)
                     sell_tp = round(trade.entry_price * (1 - TP_PCT), 2)
 
                     if price >= sell_sl:
                         logger.info("SELL SL hit: %s @ %.2f  SL=%.2f", trade.symbol, price, sell_sl)
-                        await close_trade(trade, price, "sl-hit", db, redis)
+                        closed = await close_trade(trade, price, "sl-hit", db, redis)
+                        await ws_manager.broadcast({
+                            "type": "trade_closed",
+                            "trade_id": closed.trade_id,
+                            "symbol": closed.symbol,
+                            "exit_price": price,
+                            "reason": "sl-hit",
+                            "net_pnl": closed.net_pnl,
+                        })
+                        exited = True
 
                     elif price <= sell_tp:
                         logger.info("SELL TP hit: %s @ %.2f  TP=%.2f", trade.symbol, price, sell_tp)
-                        await close_trade(trade, price, "target-hit", db, redis)
+                        closed = await close_trade(trade, price, "target-hit", db, redis)
+                        await ws_manager.broadcast({
+                            "type": "trade_closed",
+                            "trade_id": closed.trade_id,
+                            "symbol": closed.symbol,
+                            "exit_price": price,
+                            "reason": "target-hit",
+                            "net_pnl": closed.net_pnl,
+                        })
+                        exited = True
 
                 else:
-                    # BUY: SL is below entry, TP is above entry
                     if price <= hard_sl:
                         logger.info("BUY SL hit: %s @ %.2f  SL=%.2f", trade.symbol, price, hard_sl)
-                        await close_trade(trade, price, "sl-hit", db, redis)
+                        closed = await close_trade(trade, price, "sl-hit", db, redis)
+                        await ws_manager.broadcast({
+                            "type": "trade_closed",
+                            "trade_id": closed.trade_id,
+                            "symbol": closed.symbol,
+                            "exit_price": price,
+                            "reason": "sl-hit",
+                            "net_pnl": closed.net_pnl,
+                        })
+                        exited = True
 
                     elif price >= tp_level:
                         logger.info("BUY TP hit: %s @ %.2f  TP=%.2f", trade.symbol, price, tp_level)
-                        await close_trade(trade, price, "target-hit", db, redis)
+                        closed = await close_trade(trade, price, "target-hit", db, redis)
+                        await ws_manager.broadcast({
+                            "type": "trade_closed",
+                            "trade_id": closed.trade_id,
+                            "symbol": closed.symbol,
+                            "exit_price": price,
+                            "reason": "target-hit",
+                            "net_pnl": closed.net_pnl,
+                        })
+                        exited = True
+
+                # Broadcast live price update for open positions still running
+                if not exited:
+                    mtm = round((price - trade.entry_price) * trade.quantity, 2)
+                    if trade.signal_type == "SELL":
+                        mtm = -mtm
+                    await ws_manager.broadcast({
+                        "type": "price_update",
+                        "trade_id": trade.trade_id,
+                        "symbol": trade.symbol,
+                        "current_price": price,
+                        "mtm": mtm,
+                        "stop_loss": trade.stop_loss,
+                        "target_price": trade.target_price,
+                    })
 
     except Exception as exc:
         logger.error("monitor_open_trades error: %s", exc)
