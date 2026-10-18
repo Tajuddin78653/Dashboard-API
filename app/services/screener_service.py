@@ -302,63 +302,108 @@ def get_stock_indicators(symbol: str, interval: str = "1d") -> dict[str, Any] | 
     return _fetch_and_compute(symbol, interval=interval)
 
 
+def _build_indicator_series(df: pd.DataFrame) -> dict[str, pd.Series]:
+    """
+    Pre-compute ALL indicator series for the full DataFrame once.
+    Backtest then slices by index — no recomputation per bar.
+    """
+    close  = df["Close"].squeeze()
+    volume = df["Volume"].squeeze().astype(float)
+
+    macd_l, macd_sig, macd_h = _macd(close)
+    bb_upper, bb_mid, bb_lower = _bollinger(close)
+    vol_avg20 = _sma(volume, 20)
+
+    return {
+        "close":        close,
+        "open":         df["Open"].squeeze(),
+        "high":         df["High"].squeeze(),
+        "low":          df["Low"].squeeze(),
+        "volume":       volume,
+        "ema9":         _ema(close, 9),
+        "ema13":        _ema(close, 13),
+        "ema20":        _ema(close, 20),
+        "ema50":        _ema(close, 50),
+        "ema200":       _ema(close, 200),
+        "sma20":        _sma(close, 20),
+        "sma50":        _sma(close, 50),
+        "rsi14":        _rsi(close, 14),
+        "macd_line":    macd_l,
+        "macd_signal":  macd_sig,
+        "macd_hist":    macd_h,
+        "vol_avg20":    vol_avg20,
+        "vol_surge":    volume / vol_avg20.replace(0, float("nan")),
+        "bb_upper":     bb_upper,
+        "bb_mid":       bb_mid,
+        "bb_lower":     bb_lower,
+        "atr14":        _atr(df, 14),
+        "supertrend":   _supertrend(df),
+    }
+
+
 def backtest_screener(
     symbols: list[str],
     conditions: list[dict[str, Any]],
     period: str = "1y",
     interval: str = "1d",
 ) -> list[dict[str, Any]]:
+    """
+    Fast backtest: pre-computes all indicator series once per symbol,
+    then walks bars via index slicing instead of recomputing per bar.
+    Hold period = 5 bars. Max 10 symbols to keep response under 30s.
+    """
     results = []
-    for symbol in symbols:
+    # Cap at 10 symbols for speed — router enforces max 30 but backtest
+    # is expensive; we take the first 10 from whatever was passed.
+    for symbol in symbols[:10]:
         ticker = symbol if "." in symbol else f"{symbol}{_SUFFIX}"
         try:
-            df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
+            df = yf.download(ticker, period=period, interval=interval,
+                             progress=False, auto_adjust=True)
         except Exception:
             continue
 
-        if df is None or df.empty or len(df) < 30:
+        if df is None or df.empty or len(df) < 55:
             continue
 
-        close = df["Close"].squeeze()
-        volume = df["Volume"].squeeze()
+        # Flatten MultiIndex columns if yfinance returns them
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-        for i in range(50, len(df) - 5):
-            sub_close = close.iloc[:i+1]
-            sub_vol = volume.iloc[:i+1]
-            sub_df = df.iloc[:i+1]
+        series = _build_indicator_series(df)
+        close  = series["close"]
+        n      = len(df)
 
+        for i in range(50, n - 5):
             snap: dict[str, Any] = {
                 "symbol": symbol,
-                "close": float(sub_close.iloc[-1]),
-                "open":  float(df["Open"].squeeze().iloc[i]),
-                "high":  float(df["High"].squeeze().iloc[i]),
-                "low":   float(df["Low"].squeeze().iloc[i]),
-                "volume": int(sub_vol.iloc[-1]),
-                "ema9":  float(_ema(sub_close, 9).iloc[-1]),
-                "ema20": float(_ema(sub_close, 20).iloc[-1]),
-                "ema50": float(_ema(sub_close, 50).iloc[-1]),
-                "ema200":float(_ema(sub_close, 200).iloc[-1]),
-                "sma20": float(_sma(sub_close, 20).iloc[-1]),
-                "sma50": float(_sma(sub_close, 50).iloc[-1]),
-                "rsi14": float(_rsi(sub_close, 14).iloc[-1]),
-                "macd_line":   float(_macd(sub_close)[0].iloc[-1]),
-                "macd_signal": float(_macd(sub_close)[1].iloc[-1]),
-                "macd_hist":   float(_macd(sub_close)[2].iloc[-1]),
-                "vol_avg20": float(_sma(sub_vol.astype(float), 20).iloc[-1]),
-                "patterns": _detect_patterns(sub_df),
             }
+            # Slice each pre-computed series at bar i (O(1))
+            for key, s in series.items():
+                if isinstance(s, pd.Series):
+                    v = s.iloc[i]
+                    snap[key] = float(v) if not pd.isna(v) else 0.0
+
+            # Previous bar values for crossover detection
+            for key in ("ema9", "ema13", "ema20", "ema50", "ema200",
+                        "macd_line", "macd_signal", "rsi14", "close"):
+                prev = series[key].iloc[i - 1]
+                snap[f"_prev_{key}"] = float(prev) if not pd.isna(prev) else snap.get(key, 0.0)
+
+            snap["patterns"] = _detect_patterns(df.iloc[i-1:i+1])
+            snap["volume"] = int(series["volume"].iloc[i])
 
             if _passes_all(snap, conditions):
                 entry_price = float(close.iloc[i])
-                exit_price = float(close.iloc[i + 5])
-                return_pct = round((exit_price - entry_price) / entry_price * 100, 2)
+                exit_price  = float(close.iloc[i + 5])
+                return_pct  = round((exit_price - entry_price) / entry_price * 100, 2)
                 results.append({
-                    "symbol": symbol,
-                    "entry_date": str(df.index[i].date()),
-                    "exit_date":  str(df.index[i + 5].date()),
-                    "entry_price": round(entry_price, 2),
-                    "exit_price":  round(exit_price, 2),
-                    "return_pct":  return_pct,
-                    "result": "WIN" if return_pct > 0 else "LOSS",
+                    "symbol":       symbol,
+                    "entry_date":   str(df.index[i].date()),
+                    "exit_date":    str(df.index[i + 5].date()),
+                    "entry_price":  round(entry_price, 2),
+                    "exit_price":   round(exit_price, 2),
+                    "return_pct":   return_pct,
+                    "result":       "WIN" if return_pct > 0 else "LOSS",
                 })
     return results

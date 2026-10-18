@@ -175,12 +175,14 @@ async def stock_indicators(symbol: str, interval: str = "1d"):
 
 @router.post("/screener/backtest")
 async def backtest_endpoint(req: BacktestRequest):
-    symbols = req.symbols or DEFAULT_SYMBOLS[:10]
+    # Default to 5 liquid NSE symbols if none provided — keeps response fast
+    symbols = req.symbols or DEFAULT_SYMBOLS[:5]
     conditions = [c.model_dump(exclude_none=True) for c in req.conditions]
     if not conditions:
         raise HTTPException(status_code=400, detail="At least one condition is required")
-    if len(symbols) > 30:
-        raise HTTPException(status_code=400, detail="Max 30 symbols for backtest")
+    # Hard cap at 10 symbols — backtest is CPU+network intensive
+    if len(symbols) > 10:
+        raise HTTPException(status_code=400, detail="Max 10 symbols for backtest (speed limit)")
     try:
         trades = backtest_screener(symbols, conditions, period=req.period, interval=req.interval)
     except Exception as exc:
@@ -188,12 +190,14 @@ async def backtest_endpoint(req: BacktestRequest):
     wins = [t for t in trades if t["result"] == "WIN"]
     total = len(trades)
     return {
+        "symbols_tested": len(symbols),
         "total_signals": total,
         "wins": len(wins),
         "losses": total - len(wins),
         "win_rate": round(len(wins) / total * 100, 1) if total else 0,
         "avg_return_pct": round(sum(t["return_pct"] for t in trades) / total, 2) if total else 0,
         "trades": trades,
+        "note": f"Backtested {len(symbols)} symbols over {req.period}, hold=5 bars",
     }
 
 
